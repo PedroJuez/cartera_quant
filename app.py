@@ -202,94 +202,108 @@ def efficient_frontier(prices, rf=0.02, n_points=50):
 # --------------------------------------------------
 st.sidebar.title("⚙️ Parámetros")
 
-# Modo de análisis
-st.sidebar.subheader("🎯 Modo de Análisis")
-modo = st.sidebar.radio(
-    "¿Qué quieres analizar?",
-    ["🔍 Acción individual", "📊 Cartera (2+ activos)"],
-    index=0
-)
+# Inicializar estado si no existe
+if 'ejecutar' not in st.session_state:
+    st.session_state.ejecutar = False
 
-st.sidebar.subheader("📈 Activos")
+with st.sidebar.form(key='params_form'):
+    # Modo de análisis
+    st.sidebar.subheader("🎯 Modo de Análisis")
+    modo = st.sidebar.radio(
+        "¿Qué quieres analizar?",
+        ["🔍 Acción individual", "📊 Cartera (2+ activos)"],
+        index=0
+    )
 
-tickers_populares = {
-    "Tech US": ["AAPL", "MSFT", "GOOGL", "NVDA", "META"],
-    "Europa": ["BNP.PA", "SAP.DE", "ASML.AS", "NVO"],
-    "España": ["BBVA.MC", "SAN.MC", "ITX.MC", "IBE.MC", "TEF.MC"],
-    "ETFs": ["SPY", "QQQ", "VTI", "IWM"],
-    "Bancos": ["BBVA.MC", "SAN.MC", "BNP.PA", "JPM", "BAC"],
-}
+    st.sidebar.subheader("📈 Activos")
 
-usar_predefinidos = st.sidebar.checkbox("Usar tickers predefinidos", value=False)
+    tickers_populares = {
+        "Tech US": ["AAPL", "MSFT", "GOOGL", "NVDA", "META"],
+        "Europa": ["BNP.PA", "SAP.DE", "ASML.AS", "NVO"],
+        "España": ["BBVA.MC", "SAN.MC", "ITX.MC", "IBE.MC", "TEF.MC"],
+        "ETFs": ["SPY", "QQQ", "VTI", "IWM"],
+        "Bancos": ["BBVA.MC", "SAN.MC", "BNP.PA", "JPM", "BAC"],
+    }
 
-if modo == "🔍 Acción individual":
-    if usar_predefinidos:
-        todas_acciones = []
-        for cat, ticks in tickers_populares.items():
-            todas_acciones.extend(ticks)
-        todas_acciones = sorted(list(set(todas_acciones)))
-        TICKER_INDIVIDUAL = st.sidebar.selectbox("Selecciona acción", todas_acciones)
+    usar_predefinidos = st.sidebar.checkbox("Usar tickers predefinidos", value=False)
+
+    if modo == "🔍 Acción individual":
+        if usar_predefinidos:
+            todas_acciones = []
+            for cat, ticks in tickers_populares.items():
+                todas_acciones.extend(ticks)
+            todas_acciones = sorted(list(set(todas_acciones)))
+            TICKER_INDIVIDUAL = st.sidebar.selectbox("Selecciona acción", todas_acciones)
+        else:
+            TICKER_INDIVIDUAL = st.sidebar.text_input(
+                "Introduce ticker",
+                value="BBVA.MC",
+                help="Ejemplo: AAPL, MSFT, BBVA.MC"
+            ).strip().upper()
+        TICKERS = [TICKER_INDIVIDUAL] if TICKER_INDIVIDUAL else []
     else:
-        TICKER_INDIVIDUAL = st.sidebar.text_input(
-            "Introduce ticker",
-            value="BBVA.MC",
-            help="Ejemplo: AAPL, MSFT, BBVA.MC"
-        ).strip().upper()
-    TICKERS = [TICKER_INDIVIDUAL] if TICKER_INDIVIDUAL else []
-else:
-    if usar_predefinidos:
-        categoria = st.sidebar.selectbox("Categoría", list(tickers_populares.keys()))
-        TICKERS = tickers_populares[categoria]
-        st.sidebar.write(f"Tickers: {', '.join(TICKERS)}")
-    else:
-        tickers_input = st.sidebar.text_input(
-            "Introduce tickers (separados por coma)",
-            value="AAPL, MSFT, BBVA.MC, NVO",
-            help="Ejemplo: AAPL, MSFT, GOOGL. Para España añade .MC (ej: BBVA.MC)"
-        )
-        TICKERS = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+        if usar_predefinidos:
+            categoria = st.sidebar.selectbox("Categoría", list(tickers_populares.keys()))
+            TICKERS = tickers_populares[categoria]
+            st.sidebar.write(f"Tickers: {', '.join(TICKERS)}")
+        else:
+            tickers_input = st.sidebar.text_input(
+                "Introduce tickers (separados por coma)",
+                value="AAPL, MSFT, BBVA.MC, NVO",
+                help="Ejemplo: AAPL, MSFT, GOOGL. Para España añade .MC (ej: BBVA.MC)"
+            )
+            TICKERS = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-periodo = st.sidebar.selectbox(
-    "Período histórico", 
-    ["5d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "5y", "10y"],
-    index=4,
-    format_func=lambda x: {
-        "5d": "Última semana",
-        "1mo": "1 mes",
-        "3mo": "3 meses",
-        "6mo": "6 meses",
-        "1y": "1 año",
-        "2y": "2 años",
-        "3y": "3 años",
-        "5y": "5 años",
-        "10y": "10 años"
-    }.get(x, x)
-)
+    periodo = st.sidebar.selectbox(
+        "Período histórico", 
+        ["5d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "5y", "10y"],
+        index=4,
+        format_func=lambda x: {
+            "5d": "Última semana",
+            "1mo": "1 mes",
+            "3mo": "3 meses",
+            "6mo": "6 meses",
+            "1y": "1 año",
+            "2y": "2 años",
+            "3y": "3 años",
+            "5y": "5 años",
+            "10y": "10 años"
+        }.get(x, x)
+    )
 
-periodo_texto = {
-    "5d": "última semana",
-    "1mo": "último mes",
-    "3mo": "últimos 3 meses",
-    "6mo": "últimos 6 meses",
-    "1y": "último año",
-    "2y": "últimos 2 años",
-    "3y": "últimos 3 años",
-    "5y": "últimos 5 años",
-    "10y": "últimos 10 años"
-}.get(periodo, periodo)
+    periodo_texto = {
+        "5d": "última semana",
+        "1mo": "último mes",
+        "3mo": "últimos 3 meses",
+        "6mo": "últimos 6 meses",
+        "1y": "último año",
+        "2y": "últimos 2 años",
+        "3y": "últimos 3 años",
+        "5y": "últimos 5 años",
+        "10y": "últimos 10 años"
+    }.get(periodo, periodo)
 
-st.sidebar.markdown("---")
+    st.sidebar.markdown("---")
 
-if modo == "📊 Cartera (2+ activos)":
-    st.sidebar.subheader("💰 Inversión")
-    investment = st.sidebar.number_input("Inversión total (€)", min_value=100, max_value=1_000_000, value=10_000, step=500)
+    if modo == "📊 Cartera (2+ activos)":
+        st.sidebar.subheader("💰 Inversión")
+        investment = st.sidebar.number_input("Inversión total (€)", min_value=100, max_value=1_000_000, value=10_000, step=500)
 
-    st.sidebar.subheader("📅 Simulación")
-    months = st.sidebar.slider("Horizonte (meses)", 1, 24, 6)
-    n_sim = st.sidebar.select_slider("Simulaciones", options=[1000, 5000, 10000, 25000], value=10000)
+        st.sidebar.subheader("📅 Simulación")
+        months = st.sidebar.slider("Horizonte (meses)", 1, 24, 6)
+        n_sim = st.sidebar.select_slider("Simulaciones", options=[1000, 5000, 10000, 25000], value=10000)
 
-    st.sidebar.subheader("📊 Optimización")
-    rf = st.sidebar.slider("Tasa libre de riesgo (%)", 0.0, 10.0, 3.0, 0.25) / 100
+        st.sidebar.subheader("📊 Optimización")
+        rf = st.sidebar.slider("Tasa libre de riesgo (%)", 0.0, 10.0, 3.0, 0.25) / 100
+
+    submit_button = st.form_submit_button(label='🚀 Ejecutar Análisis')
+
+if submit_button:
+    st.session_state.ejecutar = True
+
+if not st.session_state.ejecutar:
+    st.info("👈 Configura los parámetros en el panel lateral y pulsa 'Ejecutar Análisis' para comenzar.")
+    st.stop()
 
 # --------------------------------------------------
 # CONTENIDO PRINCIPAL
