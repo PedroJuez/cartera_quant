@@ -39,12 +39,12 @@ def descargar_datos(tickers, periodo="5y"):
 
 
 @st.cache_data(ttl=3600)
-def obtener_info_accion(ticker):
+def obtener_info_accion(ticker, periodo="1y"):
     """Obtiene información fundamental de una acción."""
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        hist = stock.history(period="1y")
+        hist = stock.history(period=periodo)
         
         # Calcular P/FCF si hay datos
         market_cap = info.get('marketCap', 0)
@@ -498,7 +498,7 @@ with tab5:
     ticker_seleccionado = st.selectbox("Selecciona una acción", TICKERS)
     
     with st.spinner(f"Cargando datos de {ticker_seleccionado}..."):
-        data_accion = obtener_info_accion(ticker_seleccionado)
+        data_accion = obtener_info_accion(ticker_seleccionado, periodo)
     
     if data_accion is None:
         st.error(f"No se pudieron obtener datos para {ticker_seleccionado}")
@@ -530,7 +530,19 @@ with tab5:
         st.markdown("---")
         
         # Gráfico de cotización
-        st.markdown("#### 📈 Cotización Histórica (1 año)")
+        periodo_texto = {
+            "5d": "última semana",
+            "1mo": "último mes",
+            "3mo": "últimos 3 meses",
+            "6mo": "últimos 6 meses",
+            "1y": "último año",
+            "2y": "últimos 2 años",
+            "3y": "últimos 3 años",
+            "5y": "últimos 5 años",
+            "10y": "últimos 10 años"
+        }.get(periodo, periodo)
+        
+        st.markdown(f"#### 📈 Cotización Histórica ({periodo_texto})")
         
         if not hist.empty:
             fig, ax = plt.subplots(figsize=(12, 5))
@@ -551,7 +563,7 @@ with tab5:
             
             ax.set_xlabel('Fecha')
             ax.set_ylabel(f'Precio ({info.get("currency", "USD")})')
-            ax.set_title(f'{ticker_seleccionado} - Cotización')
+            ax.set_title(f'{ticker_seleccionado} - Cotización ({periodo_texto})')
             ax.legend(loc='upper left')
             ax.grid(True, alpha=0.3)
             
