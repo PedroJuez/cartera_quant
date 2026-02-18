@@ -1,7 +1,6 @@
 """
-Cartera Óptima con Simulación Monte Carlo
-==========================================
-Versión con selector de tickers dinámico.
+Cartera Óptima con Simulación Monte Carlo + Análisis Fundamental
+=================================================================
 """
 
 import streamlit as st
@@ -24,7 +23,7 @@ st.set_page_config(
 # --------------------------------------------------
 # FUNCIONES DE DATOS
 # --------------------------------------------------
-@st.cache_data(ttl=3600)  # Cache de 1 hora
+@st.cache_data(ttl=3600)
 def descargar_datos(tickers, periodo="5y"):
     """Descarga datos de Yahoo Finance."""
     try:
@@ -39,13 +38,40 @@ def descargar_datos(tickers, periodo="5y"):
         return None
 
 
-def validar_ticker(ticker):
-    """Valida si un ticker existe."""
+@st.cache_data(ttl=3600)
+def obtener_info_accion(ticker):
+    """Obtiene información fundamental de una acción."""
     try:
-        info = yf.Ticker(ticker).info
-        return info.get('regularMarketPrice') is not None
-    except:
-        return False
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        hist = stock.history(period="1y")
+        
+        # Calcular P/FCF si hay datos
+        market_cap = info.get('marketCap', 0)
+        free_cash_flow = info.get('freeCashflow', 0)
+        p_fcf = market_cap / free_cash_flow if free_cash_flow and free_cash_flow > 0 else None
+        
+        return {
+            'info': info,
+            'history': hist,
+            'p_fcf': p_fcf
+        }
+    except Exception as e:
+        return None
+
+
+def formatear_numero(num, decimales=2):
+    """Formatea números grandes."""
+    if num is None:
+        return "N/A"
+    if abs(num) >= 1e12:
+        return f"{num/1e12:.{decimales}f}T"
+    elif abs(num) >= 1e9:
+        return f"{num/1e9:.{decimales}f}B"
+    elif abs(num) >= 1e6:
+        return f"{num/1e6:.{decimales}f}M"
+    else:
+        return f"{num:,.{decimales}f}"
 
 
 # --------------------------------------------------
@@ -171,12 +197,12 @@ st.sidebar.title("⚙️ Parámetros")
 # Selector de tickers
 st.sidebar.subheader("📈 Activos")
 
-# Tickers predefinidos populares
 tickers_populares = {
     "Tech US": ["AAPL", "MSFT", "GOOGL", "NVDA", "META"],
     "Europa": ["BNP.PA", "SAP.DE", "ASML.AS", "NVO"],
+    "España": ["BBVA.MC", "SAN.MC", "ITX.MC", "IBE.MC", "TEF.MC"],
     "ETFs": ["SPY", "QQQ", "VTI", "IWM"],
-    "Cripto ETFs": ["IBIT", "FBTC"],
+    "Bancos": ["BBVA.MC", "SAN.MC", "BNP.PA", "JPM", "BAC"],
 }
 
 usar_predefinidos = st.sidebar.checkbox("Usar tickers predefinidos", value=False)
@@ -188,17 +214,12 @@ if usar_predefinidos:
 else:
     tickers_input = st.sidebar.text_input(
         "Introduce tickers (separados por coma)",
-        value="AAPL, MSFT, BNP.PA, NVO",
-        help="Ejemplo: AAPL, MSFT, GOOGL"
+        value="AAPL, MSFT, BBVA.MC, NVO",
+        help="Ejemplo: AAPL, MSFT, GOOGL. Para España añade .MC (ej: BBVA.MC)"
     )
     TICKERS = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-# Período de datos
-periodo = st.sidebar.selectbox(
-    "Período histórico",
-    ["1y", "2y", "3y", "5y", "10y"],
-    index=3
-)
+periodo = st.sidebar.selectbox("Período histórico", ["1y", "2y", "3y", "5y", "10y"], index=3)
 
 st.sidebar.markdown("---")
 
@@ -228,7 +249,6 @@ if prices is None or prices.empty:
     st.error("No se pudieron descargar los datos. Verifica los tickers.")
     st.stop()
 
-# Verificar que todos los tickers tienen datos
 tickers_validos = [t for t in TICKERS if t in prices.columns]
 if len(tickers_validos) < len(TICKERS):
     tickers_invalidos = set(TICKERS) - set(tickers_validos)
@@ -242,17 +262,19 @@ if len(TICKERS) < 2:
 prices = prices[TICKERS]
 
 st.markdown(f"""
-Esta aplicación encuentra la cartera con **máximo ratio de Sharpe** y simula 
-su comportamiento futuro usando el modelo Geométrico Browniano (GBM) con 
-correlaciones entre activos.
-
 **Datos cargados:** {len(prices)} días | **Desde:** {prices.index[0].strftime('%Y-%m-%d')} | **Hasta:** {prices.index[-1].strftime('%Y-%m-%d')}
 """)
 
 # --------------------------------------------------
 # TABS
 # --------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Cartera Óptima", "🎲 Simulación Monte Carlo", "⚖️ Rebalanceo", "📉 Frontera Eficiente"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📈 Cartera Óptima", 
+    "🎲 Simulación Monte Carlo", 
+    "⚖️ Rebalanceo", 
+    "📉 Frontera Eficiente",
+    "🔍 Análisis Fundamental"
+])
 
 # --------------------------------------------------
 # TAB 1: CARTERA ÓPTIMA
@@ -389,9 +411,9 @@ with tab3:
     rebalance_needed = (deviations > rebalance_threshold).any()
     
     if rebalance_needed:
-        st.warning("⚠️ **Rebalanceo recomendado** - Algunas posiciones exceden el umbral")
+        st.warning("⚠️ **Rebalanceo recomendado**")
     else:
-        st.success("✅ **No es necesario rebalancear** - Todas las posiciones dentro del umbral")
+        st.success("✅ **No es necesario rebalancear**")
     
     st.markdown("#### Comparación de Pesos")
     comparison_df = pd.DataFrame({
@@ -446,14 +468,192 @@ with tab4:
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, None)
     st.pyplot(fig)
+
+# --------------------------------------------------
+# TAB 5: ANÁLISIS FUNDAMENTAL
+# --------------------------------------------------
+with tab5:
+    st.subheader("🔍 Análisis Fundamental")
     
     st.markdown("""
-    **Interpretación:**
-    - La **frontera eficiente** (línea azul) muestra las carteras con máximo retorno para cada nivel de riesgo.
-    - La **estrella roja** es la cartera con máximo Sharpe ratio (mejor relación retorno/riesgo).
-    - La **línea roja discontinua** es la Capital Market Line.
-    - Los **puntos** individuales muestran la posición de cada activo.
+    Selecciona una acción para ver su gráfico de cotización y ratios fundamentales.
     """)
+    
+    # Selector de acción
+    ticker_seleccionado = st.selectbox("Selecciona una acción", TICKERS)
+    
+    with st.spinner(f"Cargando datos de {ticker_seleccionado}..."):
+        data_accion = obtener_info_accion(ticker_seleccionado)
+    
+    if data_accion is None:
+        st.error(f"No se pudieron obtener datos para {ticker_seleccionado}")
+    else:
+        info = data_accion['info']
+        hist = data_accion['history']
+        
+        # Información general
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.markdown(f"### {info.get('longName', ticker_seleccionado)}")
+            st.markdown(f"**Sector:** {info.get('sector', 'N/A')} | **Industria:** {info.get('industry', 'N/A')}")
+            st.markdown(f"**País:** {info.get('country', 'N/A')} | **Moneda:** {info.get('currency', 'N/A')}")
+            
+            if info.get('longBusinessSummary'):
+                with st.expander("📋 Descripción de la empresa"):
+                    st.write(info.get('longBusinessSummary'))
+        
+        with col2:
+            precio_actual = info.get('currentPrice') or info.get('regularMarketPrice', 0)
+            cambio = info.get('regularMarketChangePercent', 0)
+            st.metric(
+                "Precio Actual",
+                f"{precio_actual:.2f} {info.get('currency', '')}",
+                f"{cambio:.2f}%"
+            )
+        
+        st.markdown("---")
+        
+        # Gráfico de cotización
+        st.markdown("#### 📈 Cotización Histórica (1 año)")
+        
+        if not hist.empty:
+            fig, ax = plt.subplots(figsize=(12, 5))
+            
+            ax.plot(hist.index, hist['Close'], 'b-', linewidth=1.5, label='Precio de Cierre')
+            
+            # Media móvil 50 días
+            if len(hist) >= 50:
+                ma50 = hist['Close'].rolling(window=50).mean()
+                ax.plot(hist.index, ma50, 'orange', linewidth=1, label='MA 50', alpha=0.8)
+            
+            # Media móvil 200 días
+            if len(hist) >= 200:
+                ma200 = hist['Close'].rolling(window=200).mean()
+                ax.plot(hist.index, ma200, 'red', linewidth=1, label='MA 200', alpha=0.8)
+            
+            ax.fill_between(hist.index, hist['Low'], hist['High'], alpha=0.1, color='blue')
+            
+            ax.set_xlabel('Fecha')
+            ax.set_ylabel(f'Precio ({info.get("currency", "USD")})')
+            ax.set_title(f'{ticker_seleccionado} - Cotización')
+            ax.legend(loc='upper left')
+            ax.grid(True, alpha=0.3)
+            
+            # Formato de fechas
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            
+            st.pyplot(fig)
+            
+            # Estadísticas de precio
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Mínimo 52 sem", f"{info.get('fiftyTwoWeekLow', 'N/A')}")
+            col2.metric("Máximo 52 sem", f"{info.get('fiftyTwoWeekHigh', 'N/A')}")
+            col3.metric("Media 50 días", f"{info.get('fiftyDayAverage', 0):.2f}")
+            col4.metric("Media 200 días", f"{info.get('twoHundredDayAverage', 0):.2f}")
+        
+        st.markdown("---")
+        
+        # Ratios de valoración
+        st.markdown("#### 📊 Ratios de Valoración")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        # PER
+        per = info.get('trailingPE')
+        per_forward = info.get('forwardPE')
+        with col1:
+            st.markdown("**PER (Precio/Beneficio)**")
+            st.markdown(f"### {per:.2f}" if per else "### N/A")
+            if per_forward:
+                st.caption(f"Forward PER: {per_forward:.2f}")
+            st.caption("Años de beneficios que pagas al comprar hoy")
+        
+        # EV/EBITDA
+        ev_ebitda = info.get('enterpriseToEbitda')
+        with col2:
+            st.markdown("**EV/EBITDA**")
+            st.markdown(f"### {ev_ebitda:.2f}" if ev_ebitda else "### N/A")
+            st.caption("Valor empresa vs beneficio operativo")
+        
+        # P/FCF
+        p_fcf = data_accion['p_fcf']
+        with col3:
+            st.markdown("**P/FCF (Precio/Flujo Caja)**")
+            st.markdown(f"### {p_fcf:.2f}" if p_fcf else "### N/A")
+            st.caption("Más limpio que el PER")
+        
+        # P/BV
+        p_bv = info.get('priceToBook')
+        with col4:
+            st.markdown("**P/BV (Precio/Valor Contable)**")
+            st.markdown(f"### {p_bv:.2f}" if p_bv else "### N/A")
+            st.caption("Importante en bancos y aseguradoras")
+        
+        st.markdown("---")
+        
+        # Interpretación de ratios
+        with st.expander("📖 ¿Cómo interpretar los ratios?"):
+            st.markdown("""
+            | Ratio | Bajo | Medio | Alto | Interpretación |
+            |-------|------|-------|------|----------------|
+            | **PER** | <10 | 10-20 | >25 | PER bajo puede indicar infravaloración o problemas; alto puede indicar crecimiento esperado |
+            | **EV/EBITDA** | <6 | 6-12 | >15 | Útil para comparar empresas del mismo sector |
+            | **P/FCF** | <10 | 10-20 | >25 | Similar al PER pero basado en caja real |
+            | **P/BV** | <1 | 1-3 | >3 | P/BV < 1 puede indicar infravaloración (común en bancos) |
+            
+            ⚠️ **Importante:** Siempre compara ratios con empresas del mismo sector. Un PER "alto" en tecnología puede ser normal, mientras que sería preocupante en utilities.
+            """)
+        
+        st.markdown("---")
+        
+        # Más métricas financieras
+        st.markdown("#### 💰 Métricas Financieras")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**Capitalización**")
+            market_cap = info.get('marketCap', 0)
+            st.markdown(f"### {formatear_numero(market_cap)}")
+            
+            st.markdown("**Ingresos (TTM)**")
+            revenue = info.get('totalRevenue', 0)
+            st.markdown(f"### {formatear_numero(revenue)}")
+        
+        with col2:
+            st.markdown("**EBITDA**")
+            ebitda = info.get('ebitda', 0)
+            st.markdown(f"### {formatear_numero(ebitda)}")
+            
+            st.markdown("**Beneficio Neto**")
+            net_income = info.get('netIncomeToCommon', 0)
+            st.markdown(f"### {formatear_numero(net_income)}")
+        
+        with col3:
+            st.markdown("**Margen Operativo**")
+            op_margin = info.get('operatingMargins', 0)
+            st.markdown(f"### {op_margin*100:.1f}%" if op_margin else "### N/A")
+            
+            st.markdown("**ROE**")
+            roe = info.get('returnOnEquity', 0)
+            st.markdown(f"### {roe*100:.1f}%" if roe else "### N/A")
+        
+        st.markdown("---")
+        
+        # Dividendos
+        st.markdown("#### 💵 Dividendos")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        div_yield = info.get('dividendYield', 0)
+        div_rate = info.get('dividendRate', 0)
+        payout = info.get('payoutRatio', 0)
+        
+        col1.metric("Rentabilidad por dividendo", f"{div_yield*100:.2f}%" if div_yield else "N/A")
+        col2.metric("Dividendo anual", f"{div_rate:.2f} {info.get('currency', '')}" if div_rate else "N/A")
+        col3.metric("Payout Ratio", f"{payout*100:.1f}%" if payout else "N/A")
 
 # --------------------------------------------------
 # FOOTER
@@ -461,7 +661,7 @@ with tab4:
 st.markdown("---")
 st.markdown(f"""
 <small>
-<b>Última actualización de datos:</b> {prices.index[-1].strftime('%Y-%m-%d')} | 
+<b>Última actualización:</b> {prices.index[-1].strftime('%Y-%m-%d')} | 
 <b>Tickers:</b> {', '.join(TICKERS)} |
 <b>Disclaimer:</b> Esta herramienta es únicamente para fines educativos.
 </small>
