@@ -20,6 +20,15 @@ st.set_page_config(
     page_icon="📊"
 )
 
+# Ocultar menú de Streamlit y footer para mayor privacidad
+st.markdown("""
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
+
 # --------------------------------------------------
 # FUNCIONES DE DATOS
 # --------------------------------------------------
