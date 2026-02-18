@@ -219,7 +219,22 @@ else:
     )
     TICKERS = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-periodo = st.sidebar.selectbox("Período histórico", ["1y", "2y", "3y", "5y", "10y"], index=3)
+periodo = st.sidebar.selectbox(
+    "Período histórico", 
+    ["5d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "5y", "10y"],
+    index=4,
+    format_func=lambda x: {
+        "5d": "Última semana",
+        "1mo": "1 mes",
+        "3mo": "3 meses",
+        "6mo": "6 meses",
+        "1y": "1 año",
+        "2y": "2 años",
+        "3y": "3 años",
+        "5y": "5 años",
+        "10y": "10 años"
+    }.get(x, x)
+)
 
 st.sidebar.markdown("---")
 
