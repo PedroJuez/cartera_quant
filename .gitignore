@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+config_alertas.json
+mi_cartera.json
+data/tickers_info.csv
