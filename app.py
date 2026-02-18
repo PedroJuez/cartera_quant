@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 # --------------------------------------------------
 st.set_page_config(
     page_title="Análisis de Inversiones", 
-    layout="wide",
+    layout="centered",
     page_icon="📊"
 )
 
@@ -25,7 +25,6 @@ st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -727,10 +726,3 @@ else:
 # --------------------------------------------------
 # FOOTER
 # --------------------------------------------------
-st.markdown("---")
-st.markdown("""
-<small>
-<b>Disclaimer:</b> Esta herramienta es únicamente para fines educativos. 
-Los resultados pasados no garantizan rendimientos futuros.
-</small>
-""", unsafe_allow_html=True)
