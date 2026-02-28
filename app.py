@@ -738,12 +738,22 @@ if modo == "📊 Cartera (2+ activos)":
     st.sidebar.subheader("📊 Optimización")
     rf = st.sidebar.slider("Tasa libre de riesgo (%)", 0.0, 10.0, 3.0, 0.25) / 100
     
-    # Límite de peso máximo por activo
-    max_weight = st.sidebar.slider(
-        "Peso máximo por activo (%)", 
-        20, 100, 40, 5,
-        help="Limita cuánto puede invertirse en un solo activo para forzar diversificación"
-    ) / 100
+    # Modo de optimización
+    modo_optimizacion = st.sidebar.radio(
+        "Estrategia de cartera",
+        ["🎯 Máximo Sharpe (sin límites)", "🔀 Diversificación forzada"],
+        index=1,
+        help="Máximo Sharpe puede concentrar todo en una acción. Diversificación fuerza un reparto."
+    )
+    
+    if modo_optimizacion == "🔀 Diversificación forzada":
+        max_weight = st.sidebar.slider(
+            "Peso máximo por activo (%)", 
+            20, 60, 40, 5,
+            help="Limita cuánto puede invertirse en un solo activo"
+        ) / 100
+    else:
+        max_weight = 1.0  # Sin límite
 
 # --------------------------------------------------
 # CONTENIDO PRINCIPAL
@@ -1169,6 +1179,12 @@ elif modo == "📊 Cartera (2+ activos)":
     # TAB 1: CARTERA ÓPTIMA
     with tab1:
         st.subheader("Optimización de Cartera")
+        
+        # Mostrar modo de optimización
+        if max_weight < 1.0:
+            st.info(f"🔀 **Diversificación forzada**: máximo {max_weight:.0%} por activo")
+        else:
+            st.info("🎯 **Máximo Sharpe**: sin límites de concentración")
         
         best = optimal_portfolio(prices, rf, max_weight)
         weights = best["Weights"]
