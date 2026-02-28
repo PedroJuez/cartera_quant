@@ -234,32 +234,47 @@ def risk_metrics(returns, confidence=0.95):
 
 def efficient_frontier(prices, rf=0.02, n_points=50, max_weight=1.0):
     """Calcula la frontera eficiente."""
-    log_returns, mu, cov = compute_statistics(prices)
-    n_assets = len(prices.columns)
-    
-    min_ret, max_ret = mu.min(), mu.max()
-    target_returns = np.linspace(min_ret, max_ret, n_points)
-    
-    frontier = []
-    for target in target_returns:
-        def portfolio_vol(w):
-            return np.sqrt(np.dot(w.T, np.dot(cov, w)))
+    try:
+        log_returns, mu, cov = compute_statistics(prices)
+        n_assets = len(prices.columns)
         
-        constraints = [
-            {'type': 'eq', 'fun': lambda w: np.sum(w) - 1},
-            {'type': 'eq', 'fun': lambda w, t=target: np.dot(w, mu) - t}
-        ]
-        bounds = tuple((0, max_weight) for _ in range(n_assets))
-        w0 = np.ones(n_assets) / n_assets
+        # Ajustar max_weight si es muy restrictivo
+        min_weight_needed = 1.0 / n_assets
+        if max_weight < min_weight_needed:
+            max_weight = min_weight_needed + 0.1
         
-        result = minimize(portfolio_vol, w0, method='SLSQP', bounds=bounds, constraints=constraints)
+        min_ret, max_ret = mu.min(), mu.max()
+        target_returns = np.linspace(min_ret, max_ret, n_points)
         
-        if result.success:
-            vol = result.fun
-            sharpe = (target - rf) / vol if vol > 0 else 0
-            frontier.append({'Return': target, 'Vol': vol, 'Sharpe': sharpe, 'Weights': result.x})
-    
-    return pd.DataFrame(frontier)
+        frontier = []
+        for target in target_returns:
+            def portfolio_vol(w):
+                return np.sqrt(np.dot(w.T, np.dot(cov, w)))
+            
+            constraints = [
+                {'type': 'eq', 'fun': lambda w: np.sum(w) - 1},
+                {'type': 'eq', 'fun': lambda w, t=target: np.dot(w, mu) - t}
+            ]
+            bounds = tuple((0, max_weight) for _ in range(n_assets))
+            w0 = np.ones(n_assets) / n_assets
+            
+            result = minimize(portfolio_vol, w0, method='SLSQP', bounds=bounds, constraints=constraints)
+            
+            if result.success:
+                vol = result.fun
+                sharpe = (target - rf) / vol if vol > 0 else 0
+                frontier.append({'Return': target, 'Vol': vol, 'Sharpe': sharpe, 'Weights': result.x})
+        
+        if not frontier:
+            # Si no hay resultados, crear al menos un punto con pesos iguales
+            w_equal = np.ones(n_assets) / n_assets
+            ret_equal = np.dot(w_equal, mu)
+            vol_equal = np.sqrt(np.dot(w_equal.T, np.dot(cov, w_equal)))
+            frontier.append({'Return': ret_equal, 'Vol': vol_equal, 'Sharpe': (ret_equal - rf) / vol_equal, 'Weights': w_equal})
+        
+        return pd.DataFrame(frontier)
+    except Exception as e:
+        return pd.DataFrame(columns=['Return', 'Vol', 'Sharpe', 'Weights'])
 
 
 # --------------------------------------------------
@@ -1375,27 +1390,31 @@ elif modo == "📊 Cartera (2+ activos)":
         with st.spinner("Calculando frontera eficiente..."):
             frontier = efficient_frontier(prices, rf, n_points=100, max_weight=max_weight)
         
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        ax.plot(frontier['Vol'] * 100, frontier['Return'] * 100, 'b-', linewidth=2, label='Frontera Eficiente')
-        ax.scatter(best['Vol'] * 100, best['Return'] * 100, marker='*', s=300, c='red', label=f'Cartera Óptima (Sharpe={best["Sharpe"]:.2f})')
-        
-        log_returns, mu, cov = compute_statistics(prices)
-        for ticker in TICKERS:
-            ax.scatter(np.sqrt(cov.loc[ticker, ticker]) * 100, mu[ticker] * 100, marker='o', s=100, label=ticker)
-        
-        sharpe_opt = best['Sharpe']
-        x_cml = np.linspace(0, frontier['Vol'].max() * 100 * 1.2, 100)
-        y_cml = rf * 100 + sharpe_opt * x_cml
-        ax.plot(x_cml, y_cml, 'r--', alpha=0.5, label='Capital Market Line')
-        
-        ax.set_xlabel('Volatilidad (%)')
-        ax.set_ylabel('Retorno Esperado (%)')
-        ax.set_title('Frontera Eficiente de Markowitz')
-        ax.legend(loc='best')
-        ax.grid(True, alpha=0.3)
-        ax.set_xlim(0, None)
-        st.pyplot(fig)
+        if frontier.empty or 'Vol' not in frontier.columns or 'Return' not in frontier.columns:
+            st.warning("No se pudo calcular la frontera eficiente con los parámetros actuales. Prueba a ajustar el peso máximo por activo.")
+        else:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            ax.plot(frontier['Vol'] * 100, frontier['Return'] * 100, 'b-', linewidth=2, label='Frontera Eficiente')
+            ax.scatter(best['Vol'] * 100, best['Return'] * 100, marker='*', s=300, c='red', label=f'Cartera Óptima (Sharpe={best["Sharpe"]:.2f})')
+            
+            log_returns, mu, cov = compute_statistics(prices)
+            for ticker in TICKERS:
+                ax.scatter(np.sqrt(cov.loc[ticker, ticker]) * 100, mu[ticker] * 100, marker='o', s=100, label=ticker)
+            
+            sharpe_opt = best['Sharpe']
+            if not frontier['Vol'].empty:
+                x_cml = np.linspace(0, frontier['Vol'].max() * 100 * 1.2, 100)
+                y_cml = rf * 100 + sharpe_opt * x_cml
+                ax.plot(x_cml, y_cml, 'r--', alpha=0.5, label='Capital Market Line')
+            
+            ax.set_xlabel('Volatilidad (%)')
+            ax.set_ylabel('Retorno Esperado (%)')
+            ax.set_title('Frontera Eficiente de Markowitz')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.3)
+            ax.set_xlim(0, None)
+            st.pyplot(fig)
 
 # --------------------------------------------------
 # FOOTER
