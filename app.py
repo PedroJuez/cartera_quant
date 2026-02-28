@@ -23,7 +23,7 @@ st.set_page_config(
 # --------------------------------------------------
 # FUNCIONES DE DATOS
 # --------------------------------------------------
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=7200)  # Cache de 2 horas
 def descargar_datos(tickers, periodo="5y"):
     """Descarga datos de Yahoo Finance."""
     try:
@@ -34,17 +34,32 @@ def descargar_datos(tickers, periodo="5y"):
             prices = data['Close']
         return prices.dropna()
     except Exception as e:
-        st.error(f"Error descargando datos: {e}")
+        if "RateLimit" in str(type(e).__name__) or "rate" in str(e).lower():
+            st.error("⚠️ Yahoo Finance ha bloqueado temporalmente las peticiones. Espera 1-2 minutos.")
+        else:
+            st.error(f"Error descargando datos: {e}")
         return None
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=7200)  # Cache de 2 horas
 def obtener_info_accion(ticker, periodo="1y"):
     """Obtiene información fundamental de una acción."""
     try:
         stock = yf.Ticker(ticker)
-        info = stock.info
+        
+        # Obtener histórico primero (menos propenso a rate limit)
         hist = stock.history(period=periodo)
+        
+        # Intentar obtener info fundamental
+        try:
+            info = stock.info
+        except Exception:
+            # Si falla info, usar datos básicos
+            info = {
+                'longName': ticker,
+                'currentPrice': hist['Close'].iloc[-1] if not hist.empty else None,
+                'currency': 'USD'
+            }
         
         market_cap = info.get('marketCap', 0)
         free_cash_flow = info.get('freeCashflow', 0)
@@ -56,6 +71,7 @@ def obtener_info_accion(ticker, periodo="1y"):
             'p_fcf': p_fcf
         }
     except Exception as e:
+        st.warning(f"Error parcial obteniendo datos de {ticker}: {e}")
         return None
 
 
@@ -610,7 +626,7 @@ st.sidebar.title("⚙️ Parámetros")
 
 # Buscador de tickers
 with st.sidebar.expander("🔎 Buscar ticker por nombre"):
-    busqueda = st.text_input("Nombre de empresa", placeholder="Ej: Inditex, Apple, Santander...")
+    busqueda = st.text_input("Nombre de empresa", placeholder="Ej: Inditex, Apple, BBVA...")
     
     if busqueda:
         # Primero buscar en diccionario local
@@ -770,11 +786,19 @@ if modo == "🔍 Acción individual":
     
     ticker = TICKERS[0]
     
-    with st.spinner(f"Cargando datos de {ticker}..."):
-        data_accion = obtener_info_accion(ticker, periodo)
+    try:
+        with st.spinner(f"Cargando datos de {ticker}..."):
+            data_accion = obtener_info_accion(ticker, periodo)
+        
+        if data_accion is None:
+            st.error(f"No se pudieron obtener datos para {ticker}. Verifica que el ticker sea correcto.")
+            st.stop()
     
-    if data_accion is None:
-        st.error(f"No se pudieron obtener datos para {ticker}. Verifica que el ticker sea correcto.")
+    except Exception as e:
+        if "RateLimit" in str(type(e).__name__) or "rate" in str(e).lower():
+            st.error("⚠️ Yahoo Finance ha bloqueado temporalmente las peticiones. Espera 1-2 minutos y recarga la página.")
+        else:
+            st.error(f"Error obteniendo datos: {e}")
         st.stop()
     
     info = data_accion['info']
@@ -960,20 +984,26 @@ elif modo == "🎯 Recomendación compra/venta":
     
     ticker = TICKERS[0]
     
-    with st.spinner(f"Analizando {ticker}..."):
-        # Obtener datos fundamentales
-        data_accion = obtener_info_accion(ticker, "1y")
+    try:
+        with st.spinner(f"Analizando {ticker}..."):
+            # Usar solo una llamada para obtener todo
+            data_accion = obtener_info_accion(ticker, "1y")
         
-        # Obtener datos históricos más largos para análisis técnico
-        stock = yf.Ticker(ticker)
-        hist_largo = stock.history(period="1y")
-    
-    if data_accion is None:
-        st.error(f"No se pudieron obtener datos para {ticker}.")
+        if data_accion is None:
+            st.error(f"No se pudieron obtener datos para {ticker}. Verifica que el ticker sea correcto.")
+            st.stop()
+        
+        info = data_accion['info']
+        hist = data_accion['history']
+        hist_largo = hist  # Reutilizar los mismos datos
+        
+    except Exception as e:
+        if "RateLimit" in str(type(e).__name__) or "rate" in str(e).lower():
+            st.error("⚠️ Yahoo Finance ha bloqueado temporalmente las peticiones. Espera 1-2 minutos y recarga la página.")
+            st.info("💡 Esto ocurre cuando hay muchas consultas seguidas. Es una limitación de Yahoo Finance, no de la app.")
+        else:
+            st.error(f"Error obteniendo datos: {e}")
         st.stop()
-    
-    info = data_accion['info']
-    hist = data_accion['history']
     
     # Calcular scores
     s_fund, detalles_fund = score_fundamental(info)
