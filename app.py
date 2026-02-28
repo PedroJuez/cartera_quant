@@ -610,7 +610,7 @@ st.sidebar.title("⚙️ Parámetros")
 
 # Buscador de tickers
 with st.sidebar.expander("🔎 Buscar ticker por nombre"):
-    busqueda = st.text_input("Nombre de empresa", placeholder="Ej: Inditex, Apple, BBVA...")
+    busqueda = st.text_input("Nombre de empresa", placeholder="Ej: Inditex, Apple, Santander...")
     
     if busqueda:
         # Primero buscar en diccionario local
@@ -634,7 +634,7 @@ with st.sidebar.expander("🔎 Buscar ticker por nombre"):
         if not resultados_locales and not resultados_yahoo:
             st.warning("No se encontraron resultados")
     
-    st.caption("💡 España: añade .MC (ej: BBVA.MC)")
+    st.caption("💡 España: añade .MC (ej: SAN.MC)")
     st.caption("💡 Alemania: añade .DE (ej: BMW.DE)")
     st.caption("💡 Francia: añade .PA (ej: BNP.PA)")
 
@@ -670,8 +670,8 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
     else:
         TICKER_INDIVIDUAL = st.sidebar.text_input(
             "Introduce ticker",
-            value="BBVA.MC",
-            help="Ejemplo: AAPL, MSFT, BBVA.MC"
+            value="SAN.MC",
+            help="Ejemplo: AAPL, MSFT, SAN.MC"
         ).strip().upper()
     TICKERS = [TICKER_INDIVIDUAL] if TICKER_INDIVIDUAL else []
 else:
@@ -682,8 +682,8 @@ else:
     else:
         tickers_input = st.sidebar.text_input(
             "Introduce tickers (separados por coma)",
-            value="AAPL, MSFT, BBVA.MC, NVO",
-            help="Ejemplo: AAPL, MSFT, GOOGL. Para España añade .MC (ej: BBVA.MC)"
+            value="AAPL, MSFT, SAN.MC, NVO",
+            help="Ejemplo: AAPL, MSFT, GOOGL. Para España añade .MC (ej: SAN.MC)"
         )
         TICKERS = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
