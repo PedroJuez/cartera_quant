@@ -638,6 +638,8 @@ def generar_recomendacion(score_fund, score_tech, peso_fundamental=0.5):
 # SIDEBAR
 # --------------------------------------------------
 st.sidebar.title("⚙️ Parámetros")
+st.sidebar.caption("Creado por Pedro Juez Martel")
+
 
 # Buscador de tickers
 with st.sidebar.expander("🔎 Buscar ticker por nombre"):
@@ -790,6 +792,8 @@ if modo == "📊 Cartera (2+ activos)":
 # CONTENIDO PRINCIPAL
 # --------------------------------------------------
 st.title("📊 Análisis de Inversiones")
+st.caption("Creado por Pedro Juez Martel")
+
 
 # ==================================================
 # MODO ACCIÓN INDIVIDUAL
