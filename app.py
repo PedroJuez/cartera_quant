@@ -20,9 +20,9 @@ st.set_page_config(
     page_icon="📊"
 )
 
-# --- BRANDING ---
-st.sidebar.markdown("### ✍️ Creado por Pedro Juez Martel")
-st.markdown("<h3 style='text-align: center; color: #4A90E2;'>Creado por Pedro Juez Martel</h3>", unsafe_allow_html=True)
+# --------------------------------------------------
+# FUNCIONES DE DATOS
+# --------------------------------------------------
 st.markdown("---")
 
 # --------------------------------------------------
@@ -795,7 +795,6 @@ if modo == "📊 Cartera (2+ activos)":
 # --------------------------------------------------
 # CONTENIDO PRINCIPAL
 # --------------------------------------------------
-st.markdown("<h2 style='text-align: center; color: #4A90E2;'>Creado por Pedro Juez Martel</h2>", unsafe_allow_html=True)
 st.title("📊 Análisis de Inversiones")
 st.markdown("---")
 
@@ -1429,4 +1428,4 @@ elif modo == "📊 Cartera (2+ activos)":
 # FOOTER
 # --------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.markdown("### ✍️ Creado por Pedro Juez Martel")
+st.sidebar.caption("Creado por Pedro Juez Martel")
