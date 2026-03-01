@@ -20,6 +20,11 @@ st.set_page_config(
     page_icon="📊"
 )
 
+# --- BRANDING ---
+st.sidebar.markdown("### ✍️ Creado por Pedro Juez Martel")
+st.markdown("<h3 style='text-align: center; color: #4A90E2;'>Creado por Pedro Juez Martel</h3>", unsafe_allow_html=True)
+st.markdown("---")
+
 # --------------------------------------------------
 # FUNCIONES DE DATOS
 # --------------------------------------------------
@@ -637,8 +642,7 @@ def generar_recomendacion(score_fund, score_tech, peso_fundamental=0.5):
 # --------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------
-st.sidebar.title("⚙️ Parámetros")
-st.sidebar.caption("Creado por Pedro Juez Martel")
+# Moved to top of sidebar
 
 
 # Buscador de tickers
@@ -791,8 +795,9 @@ if modo == "📊 Cartera (2+ activos)":
 # --------------------------------------------------
 # CONTENIDO PRINCIPAL
 # --------------------------------------------------
+st.markdown("<h2 style='text-align: center; color: #4A90E2;'>Creado por Pedro Juez Martel</h2>", unsafe_allow_html=True)
 st.title("📊 Análisis de Inversiones")
-st.caption("Creado por Pedro Juez Martel")
+st.markdown("---")
 
 
 # ==================================================
@@ -1423,10 +1428,5 @@ elif modo == "📊 Cartera (2+ activos)":
 # --------------------------------------------------
 # FOOTER
 # --------------------------------------------------
-st.markdown("---")
-st.markdown("""
-<small>
-<b>Disclaimer:</b> Esta herramienta es únicamente para fines educativos. 
-Los resultados pasados no garantizan rendimientos futuros.
-</small>
-""", unsafe_allow_html=True)
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ✍️ Creado por Pedro Juez Martel")
