@@ -758,9 +758,21 @@ st.sidebar.markdown("---")
 # Parámetros para modo recomendación
 if modo == "🎯 Recomendación compra/venta":
     st.sidebar.subheader("⚖️ Ponderación")
+    
+    # Peso por defecto según el periodo (según propuesta del usuario)
+    default_fundo = 50
+    if periodo in ["5d", "1mo"]:
+        default_fundo = 20
+    elif periodo in ["3mo", "6mo"]:
+        default_fundo = 30
+    elif periodo in ["1y", "2y"]:
+        default_fundo = 50
+    elif periodo in ["3y", "5y", "10y"]:
+        default_fundo = 75
+        
     peso_fundamental = st.sidebar.slider(
         "Peso Análisis Fundamental",
-        0, 100, 50, 5,
+        0, 100, default_fundo, 5,
         help="Porcentaje de peso para el análisis fundamental vs técnico"
     ) / 100
 
