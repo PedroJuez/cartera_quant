@@ -5,3 +5,5 @@ numpy
 matplotlib
 scipy
 requests
+hmmlearn
+arch

@@ -10,6 +10,21 @@ import matplotlib.pyplot as plt
 import yfinance as yf
 from scipy.optimize import minimize
 from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+# HMM y GARCH (opcionales)
+try:
+    from hmmlearn.hmm import GaussianHMM
+    HMM_AVAILABLE = True
+except ImportError:
+    HMM_AVAILABLE = False
+
+try:
+    from arch import arch_model
+    GARCH_AVAILABLE = True
+except ImportError:
+    GARCH_AVAILABLE = False
 
 # --------------------------------------------------
 # CONFIG
@@ -19,11 +34,6 @@ st.set_page_config(
     layout="wide",
     page_icon="📊"
 )
-
-# --------------------------------------------------
-# FUNCIONES DE DATOS
-# --------------------------------------------------
-st.markdown("---")
 
 # --------------------------------------------------
 # FUNCIONES DE DATOS
@@ -605,15 +615,20 @@ def score_tecnico(hist):
     return score, detalles
 
 
-def generar_recomendacion(score_fund, score_tech, peso_fundamental=0.5):
+def generar_recomendacion(score_fund, score_tech, score_regimen=None, peso_fundamental=0.4, peso_tecnico=0.3, peso_regimen=0.3):
     """Genera recomendación final basada en scores."""
-    peso_tecnico = 1 - peso_fundamental
-    score_total = score_fund * peso_fundamental + score_tech * peso_tecnico
+    if score_regimen is not None:
+        score_total = score_fund * peso_fundamental + score_tech * peso_tecnico + score_regimen * peso_regimen
+    else:
+        # Sin HMM/GARCH, usar solo fundamental y técnico
+        peso_fund_adj = peso_fundamental / (peso_fundamental + peso_tecnico)
+        peso_tech_adj = peso_tecnico / (peso_fundamental + peso_tecnico)
+        score_total = score_fund * peso_fund_adj + score_tech * peso_tech_adj
     
     if score_total >= 80:
         recomendacion = "COMPRA FUERTE"
         color = "🟢"
-        explicacion = "Los indicadores fundamentales y técnicos están alineados positivamente. Buen momento para entrar."
+        explicacion = "Los indicadores fundamentales, técnicos y de régimen están alineados positivamente. Buen momento para entrar."
     elif score_total >= 65:
         recomendacion = "COMPRA"
         color = "🟢"
@@ -640,10 +655,351 @@ def generar_recomendacion(score_fund, score_tech, peso_fundamental=0.5):
 
 
 # --------------------------------------------------
+# FUNCIONES HMM (Hidden Markov Model)
+# --------------------------------------------------
+def detectar_regimenes_hmm(returns, n_states=3):
+    """
+    Detecta regímenes de mercado usando Hidden Markov Model.
+    
+    Estados:
+    - 0: Bajista (media negativa, alta volatilidad)
+    - 1: Lateral (media ~0, volatilidad media)  
+    - 2: Alcista (media positiva, baja volatilidad)
+    
+    Returns: dict con régimen actual, probabilidades, historial
+    """
+    if not HMM_AVAILABLE:
+        return None
+    
+    try:
+        # Preparar datos
+        returns_clean = returns.dropna().values.reshape(-1, 1)
+        
+        if len(returns_clean) < 50:
+            return None
+        
+        # Entrenar HMM
+        model = GaussianHMM(
+            n_components=n_states,
+            covariance_type="full",
+            n_iter=1000,
+            random_state=42
+        )
+        model.fit(returns_clean)
+        
+        # Obtener estados ocultos
+        hidden_states = model.predict(returns_clean)
+        state_probs = model.predict_proba(returns_clean)
+        
+        # Identificar qué estado es cuál basándose en media y varianza
+        state_means = model.means_.flatten()
+        state_vars = np.array([model.covars_[i][0][0] for i in range(n_states)])
+        
+        # Ordenar estados: bajista (peor media), lateral, alcista (mejor media)
+        sorted_indices = np.argsort(state_means)
+        state_mapping = {sorted_indices[0]: 'bajista', 
+                        sorted_indices[1]: 'lateral', 
+                        sorted_indices[2]: 'alcista'}
+        
+        # Estado actual y probabilidades
+        current_state_idx = hidden_states[-1]
+        current_state = state_mapping[current_state_idx]
+        current_probs = state_probs[-1]
+        
+        # Probabilidades por régimen
+        prob_bajista = current_probs[sorted_indices[0]]
+        prob_lateral = current_probs[sorted_indices[1]]
+        prob_alcista = current_probs[sorted_indices[2]]
+        
+        # Calcular duración media en cada régimen
+        duraciones = {s: [] for s in range(n_states)}
+        current_duration = 1
+        for i in range(1, len(hidden_states)):
+            if hidden_states[i] == hidden_states[i-1]:
+                current_duration += 1
+            else:
+                duraciones[hidden_states[i-1]].append(current_duration)
+                current_duration = 1
+        duraciones[hidden_states[-1]].append(current_duration)
+        
+        duracion_media = {state_mapping[s]: np.mean(duraciones[s]) if duraciones[s] else 0 
+                         for s in range(n_states)}
+        
+        # Matriz de transición
+        transmat = model.transmat_
+        
+        return {
+            'estado_actual': current_state,
+            'prob_bajista': prob_bajista,
+            'prob_lateral': prob_lateral,
+            'prob_alcista': prob_alcista,
+            'historial_estados': [state_mapping[s] for s in hidden_states],
+            'duracion_media': duracion_media,
+            'matriz_transicion': transmat,
+            'state_mapping': state_mapping,
+            'sorted_indices': sorted_indices,
+            'means': state_means[sorted_indices],
+            'vars': state_vars[sorted_indices]
+        }
+        
+    except Exception as e:
+        return None
+
+
+def score_regimen_hmm(hmm_result):
+    """
+    Calcula score (0-100) basado en el régimen HMM detectado.
+    """
+    if hmm_result is None:
+        return 50, {'error': 'HMM no disponible'}
+    
+    detalles = {}
+    score = 0
+    
+    estado = hmm_result['estado_actual']
+    prob_alcista = hmm_result['prob_alcista']
+    prob_bajista = hmm_result['prob_bajista']
+    prob_lateral = hmm_result['prob_lateral']
+    
+    # Score base por régimen (0-50 pts)
+    if estado == 'alcista':
+        pts_regimen = 50
+        estado_emoji = '🟢'
+    elif estado == 'lateral':
+        pts_regimen = 25
+        estado_emoji = '🟡'
+    else:  # bajista
+        pts_regimen = 0
+        estado_emoji = '🔴'
+    
+    score += pts_regimen
+    detalles['Régimen Actual'] = {
+        'valor': f"{estado.capitalize()} {estado_emoji}",
+        'puntos': pts_regimen,
+        'max': 50,
+        'estado': estado_emoji
+    }
+    
+    # Bonus por probabilidad de régimen alcista (0-30 pts)
+    pts_prob = int(prob_alcista * 30)
+    score += pts_prob
+    detalles['Prob. Alcista'] = {
+        'valor': f"{prob_alcista:.1%}",
+        'puntos': pts_prob,
+        'max': 30,
+        'estado': '🟢' if prob_alcista > 0.5 else '🟡' if prob_alcista > 0.3 else '🔴'
+    }
+    
+    # Penalización por probabilidad bajista (0-20 pts, invertido)
+    pts_bajista = int((1 - prob_bajista) * 20)
+    score += pts_bajista
+    detalles['Prob. Bajista'] = {
+        'valor': f"{prob_bajista:.1%}",
+        'puntos': pts_bajista,
+        'max': 20,
+        'estado': '🟢' if prob_bajista < 0.2 else '🟡' if prob_bajista < 0.4 else '🔴'
+    }
+    
+    return min(score, 100), detalles
+
+
+# --------------------------------------------------
+# FUNCIONES GARCH
+# --------------------------------------------------
+def predecir_volatilidad_garch(returns, horizon=22):
+    """
+    Predice volatilidad futura usando GARCH(1,1).
+    
+    Args:
+        returns: Serie de retornos
+        horizon: Días a predecir (22 = 1 mes)
+    
+    Returns: dict con volatilidad predicha, intervalos de confianza
+    """
+    if not GARCH_AVAILABLE:
+        return None
+    
+    try:
+        # Preparar datos (GARCH necesita retornos en porcentaje)
+        returns_pct = returns.dropna() * 100
+        
+        if len(returns_pct) < 100:
+            return None
+        
+        # Ajustar modelo GARCH(1,1)
+        model = arch_model(returns_pct, vol='Garch', p=1, q=1, dist='normal')
+        fitted = model.fit(disp='off', show_warning=False)
+        
+        # Predicción de volatilidad
+        forecast = fitted.forecast(horizon=horizon)
+        
+        # Volatilidad predicha (anualizada)
+        vol_diaria_predicha = np.sqrt(forecast.variance.values[-1, :])
+        vol_media_predicha = vol_diaria_predicha.mean()
+        vol_anualizada = vol_media_predicha * np.sqrt(252) / 100  # Convertir a decimal
+        
+        # Volatilidad histórica para comparar
+        vol_historica = returns.std() * np.sqrt(252)
+        
+        # Cambio en volatilidad
+        cambio_vol = (vol_anualizada - vol_historica) / vol_historica * 100
+        
+        # Parámetros del modelo
+        omega = fitted.params.get('omega', 0)
+        alpha = fitted.params.get('alpha[1]', 0)
+        beta = fitted.params.get('beta[1]', 0)
+        persistencia = alpha + beta
+        
+        # VaR predicho (95%)
+        var_95 = returns_pct.mean() - 1.645 * vol_media_predicha
+        
+        return {
+            'vol_predicha_anual': vol_anualizada,
+            'vol_historica_anual': vol_historica,
+            'cambio_vol_pct': cambio_vol,
+            'vol_diaria_predicha': vol_diaria_predicha / 100,  # Serie de predicciones
+            'persistencia': persistencia,
+            'var_95': var_95 / 100,
+            'params': {'omega': omega, 'alpha': alpha, 'beta': beta}
+        }
+        
+    except Exception as e:
+        return None
+
+
+def score_volatilidad_garch(garch_result, vol_threshold_low=0.15, vol_threshold_high=0.30):
+    """
+    Calcula score (0-100) basado en predicción GARCH de volatilidad.
+    
+    Menor volatilidad predicha = mejor score
+    """
+    if garch_result is None:
+        return 50, {'error': 'GARCH no disponible'}
+    
+    detalles = {}
+    score = 0
+    
+    vol_predicha = garch_result['vol_predicha_anual']
+    vol_historica = garch_result['vol_historica_anual']
+    cambio_vol = garch_result['cambio_vol_pct']
+    persistencia = garch_result['persistencia']
+    
+    # Score por nivel de volatilidad predicha (0-40 pts)
+    if vol_predicha < vol_threshold_low:
+        pts_vol = 40
+        estado_vol = '🟢'
+    elif vol_predicha < 0.20:
+        pts_vol = 30
+        estado_vol = '🟢'
+    elif vol_predicha < vol_threshold_high:
+        pts_vol = 20
+        estado_vol = '🟡'
+    elif vol_predicha < 0.40:
+        pts_vol = 10
+        estado_vol = '🔴'
+    else:
+        pts_vol = 0
+        estado_vol = '🔴'
+    
+    score += pts_vol
+    detalles['Vol. Predicha'] = {
+        'valor': f"{vol_predicha:.1%} anual",
+        'puntos': pts_vol,
+        'max': 40,
+        'estado': estado_vol
+    }
+    
+    # Score por cambio de volatilidad (0-30 pts)
+    # Volatilidad decreciente es positivo
+    if cambio_vol < -10:
+        pts_cambio = 30
+        estado_cambio = '🟢'
+        texto_cambio = f"Bajando ({cambio_vol:+.0f}%)"
+    elif cambio_vol < 0:
+        pts_cambio = 20
+        estado_cambio = '🟢'
+        texto_cambio = f"Estable ({cambio_vol:+.0f}%)"
+    elif cambio_vol < 10:
+        pts_cambio = 15
+        estado_cambio = '🟡'
+        texto_cambio = f"Ligero aumento ({cambio_vol:+.0f}%)"
+    elif cambio_vol < 25:
+        pts_cambio = 5
+        estado_cambio = '🔴'
+        texto_cambio = f"Aumentando ({cambio_vol:+.0f}%)"
+    else:
+        pts_cambio = 0
+        estado_cambio = '🔴'
+        texto_cambio = f"Fuerte aumento ({cambio_vol:+.0f}%)"
+    
+    score += pts_cambio
+    detalles['Tendencia Vol.'] = {
+        'valor': texto_cambio,
+        'puntos': pts_cambio,
+        'max': 30,
+        'estado': estado_cambio
+    }
+    
+    # Score por persistencia (0-30 pts)
+    # Alta persistencia = volatilidad tiende a mantenerse
+    if persistencia < 0.8:
+        pts_pers = 30
+        estado_pers = '🟢'
+        texto_pers = f"Baja ({persistencia:.2f})"
+    elif persistencia < 0.9:
+        pts_pers = 20
+        estado_pers = '🟡'
+        texto_pers = f"Media ({persistencia:.2f})"
+    elif persistencia < 0.98:
+        pts_pers = 10
+        estado_pers = '🟡'
+        texto_pers = f"Alta ({persistencia:.2f})"
+    else:
+        pts_pers = 0
+        estado_pers = '🔴'
+        texto_pers = f"Muy alta ({persistencia:.2f})"
+    
+    score += pts_pers
+    detalles['Persistencia'] = {
+        'valor': texto_pers,
+        'puntos': pts_pers,
+        'max': 30,
+        'estado': estado_pers
+    }
+    
+    return min(score, 100), detalles
+
+
+def score_regimen_combinado(hmm_result, garch_result):
+    """
+    Combina scores de HMM y GARCH en un score de régimen único.
+    HMM: 60% (detecta tendencia)
+    GARCH: 40% (detecta riesgo)
+    """
+    score_hmm, detalles_hmm = score_regimen_hmm(hmm_result)
+    score_garch, detalles_garch = score_volatilidad_garch(garch_result)
+    
+    # Si ambos están disponibles, combinar
+    if 'error' not in detalles_hmm and 'error' not in detalles_garch:
+        score_total = score_hmm * 0.6 + score_garch * 0.4
+        detalles = {**detalles_hmm, **detalles_garch}
+    elif 'error' not in detalles_hmm:
+        score_total = score_hmm
+        detalles = detalles_hmm
+    elif 'error' not in detalles_garch:
+        score_total = score_garch
+        detalles = detalles_garch
+    else:
+        score_total = 50
+        detalles = {'error': 'Modelos no disponibles'}
+    
+    return score_total, detalles
+
+
+# --------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------
-# Moved to top of sidebar
-
+st.sidebar.title("⚙️ Parámetros")
 
 # Buscador de tickers
 with st.sidebar.expander("🔎 Buscar ticker por nombre"):
@@ -758,21 +1114,9 @@ st.sidebar.markdown("---")
 # Parámetros para modo recomendación
 if modo == "🎯 Recomendación compra/venta":
     st.sidebar.subheader("⚖️ Ponderación")
-    
-    # Peso por defecto según el periodo (según propuesta del usuario)
-    default_fundo = 50
-    if periodo in ["5d", "1mo"]:
-        default_fundo = 20
-    elif periodo in ["3mo", "6mo"]:
-        default_fundo = 30
-    elif periodo in ["1y", "2y"]:
-        default_fundo = 50
-    elif periodo in ["3y", "5y", "10y"]:
-        default_fundo = 75
-        
     peso_fundamental = st.sidebar.slider(
         "Peso Análisis Fundamental",
-        0, 100, default_fundo, 5,
+        0, 100, 50, 5,
         help="Porcentaje de peso para el análisis fundamental vs técnico"
     ) / 100
 
@@ -808,8 +1152,6 @@ if modo == "📊 Cartera (2+ activos)":
 # CONTENIDO PRINCIPAL
 # --------------------------------------------------
 st.title("📊 Análisis de Inversiones")
-st.markdown("---")
-
 
 # ==================================================
 # MODO ACCIÓN INDIVIDUAL
@@ -1044,8 +1386,26 @@ elif modo == "🎯 Recomendación compra/venta":
     s_fund, detalles_fund = score_fundamental(info)
     s_tech, detalles_tech = score_tecnico(hist_largo if not hist_largo.empty else hist)
     
-    # Generar recomendación
-    rec = generar_recomendacion(s_fund, s_tech, peso_fundamental)
+    # Calcular HMM y GARCH
+    returns = hist['Close'].pct_change().dropna()
+    
+    hmm_result = None
+    garch_result = None
+    s_regimen = None
+    detalles_regimen = None
+    
+    if HMM_AVAILABLE or GARCH_AVAILABLE:
+        with st.spinner("Analizando regímenes de mercado (HMM/GARCH)..."):
+            if HMM_AVAILABLE:
+                hmm_result = detectar_regimenes_hmm(returns)
+            if GARCH_AVAILABLE:
+                garch_result = predecir_volatilidad_garch(returns)
+            
+            if hmm_result is not None or garch_result is not None:
+                s_regimen, detalles_regimen = score_regimen_combinado(hmm_result, garch_result)
+    
+    # Generar recomendación (con o sin HMM/GARCH)
+    rec = generar_recomendacion(s_fund, s_tech, s_regimen, peso_fundamental)
     
     # --- HEADER ---
     st.markdown(f"## {info.get('longName', ticker)}")
@@ -1069,7 +1429,11 @@ elif modo == "🎯 Recomendación compra/venta":
     st.markdown("---")
     
     # --- SCORES DESGLOSADOS ---
-    col1, col2 = st.columns(2)
+    if s_regimen is not None:
+        col1, col2, col3 = st.columns(3)
+    else:
+        col1, col2 = st.columns(2)
+        col3 = None
     
     with col1:
         st.markdown(f"### 📊 Score Fundamental: {s_fund}/100")
@@ -1086,6 +1450,129 @@ elif modo == "🎯 Recomendación compra/venta":
         for indicador, datos in detalles_tech.items():
             if indicador != 'error':
                 st.markdown(f"{datos['estado']} **{indicador}**: {datos['valor']} ({datos['puntos']}/{datos['max']} pts)")
+    
+    if col3 is not None and s_regimen is not None and detalles_regimen is not None:
+        with col3:
+            st.markdown(f"### 🔮 Score Régimen: {s_regimen:.0f}/100")
+            st.progress(s_regimen / 100)
+            
+            if 'error' not in detalles_regimen:
+                for indicador, datos in detalles_regimen.items():
+                    st.markdown(f"{datos['estado']} **{indicador}**: {datos['valor']} ({datos['puntos']}/{datos['max']} pts)")
+            else:
+                st.info("Modelos HMM/GARCH no disponibles")
+    
+    # --- VISUALIZACIÓN HMM ---
+    if hmm_result is not None:
+        st.markdown("---")
+        st.markdown("### 🔮 Análisis de Regímenes (HMM)")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Gráfico de regímenes sobre precio
+            fig, ax = plt.subplots(figsize=(12, 5))
+            
+            close = hist['Close']
+            estados = hmm_result['historial_estados']
+            
+            # Mapear colores a estados
+            colores = {'alcista': '#00ff88', 'lateral': '#ffaa00', 'bajista': '#ff4444'}
+            
+            # Rellenar fondo según régimen
+            for i in range(len(estados)):
+                if i < len(close):
+                    ax.axvspan(close.index[i], close.index[min(i+1, len(close)-1)], 
+                              alpha=0.3, color=colores[estados[i]], linewidth=0)
+            
+            ax.plot(close.index[-len(estados):], close.iloc[-len(estados):], 'b-', linewidth=1.5)
+            ax.set_title(f'{ticker} - Regímenes de Mercado (HMM)')
+            ax.set_ylabel('Precio')
+            ax.grid(True, alpha=0.3)
+            
+            # Leyenda manual
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor='#00ff88', alpha=0.3, label='Alcista'),
+                Patch(facecolor='#ffaa00', alpha=0.3, label='Lateral'),
+                Patch(facecolor='#ff4444', alpha=0.3, label='Bajista')
+            ]
+            ax.legend(handles=legend_elements, loc='upper left')
+            
+            st.pyplot(fig)
+        
+        with col2:
+            st.markdown("**Estado Actual**")
+            estado = hmm_result['estado_actual']
+            if estado == 'alcista':
+                st.success(f"🟢 ALCISTA")
+            elif estado == 'lateral':
+                st.warning(f"🟡 LATERAL")
+            else:
+                st.error(f"🔴 BAJISTA")
+            
+            st.markdown("**Probabilidades**")
+            st.write(f"- Alcista: {hmm_result['prob_alcista']:.1%}")
+            st.write(f"- Lateral: {hmm_result['prob_lateral']:.1%}")
+            st.write(f"- Bajista: {hmm_result['prob_bajista']:.1%}")
+            
+            st.markdown("**Duración media (días)**")
+            for estado, dur in hmm_result['duracion_media'].items():
+                st.write(f"- {estado.capitalize()}: {dur:.0f}")
+    
+    # --- VISUALIZACIÓN GARCH ---
+    if garch_result is not None:
+        st.markdown("---")
+        st.markdown("### 📊 Predicción de Volatilidad (GARCH)")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            fig, ax = plt.subplots(figsize=(12, 4))
+            
+            # Volatilidad realizada (rolling 22 días)
+            vol_realizada = returns.rolling(window=22).std() * np.sqrt(252)
+            ax.plot(vol_realizada.index, vol_realizada * 100, 'b-', linewidth=1, label='Vol. Realizada (22d)')
+            
+            # Línea de volatilidad predicha
+            ax.axhline(y=garch_result['vol_predicha_anual'] * 100, color='red', 
+                      linestyle='--', linewidth=2, label=f"Vol. Predicha: {garch_result['vol_predicha_anual']:.1%}")
+            
+            # Zonas de volatilidad
+            ax.axhspan(0, 15, alpha=0.1, color='green', label='Baja (<15%)')
+            ax.axhspan(15, 30, alpha=0.1, color='yellow')
+            ax.axhspan(30, 100, alpha=0.1, color='red')
+            
+            ax.set_title(f'{ticker} - Volatilidad Histórica y Predicha (GARCH)')
+            ax.set_ylabel('Volatilidad Anualizada (%)')
+            ax.set_ylim(0, min(vol_realizada.max() * 100 * 1.5, 100))
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
+            
+            st.pyplot(fig)
+        
+        with col2:
+            st.markdown("**Volatilidad**")
+            vol_pred = garch_result['vol_predicha_anual']
+            if vol_pred < 0.15:
+                st.success(f"🟢 Baja: {vol_pred:.1%}")
+            elif vol_pred < 0.30:
+                st.warning(f"🟡 Media: {vol_pred:.1%}")
+            else:
+                st.error(f"🔴 Alta: {vol_pred:.1%}")
+            
+            st.markdown("**Comparación**")
+            st.write(f"- Histórica: {garch_result['vol_historica_anual']:.1%}")
+            st.write(f"- Predicha: {garch_result['vol_predicha_anual']:.1%}")
+            cambio = garch_result['cambio_vol_pct']
+            st.write(f"- Cambio: {cambio:+.1f}%")
+            
+            st.markdown("**Parámetros GARCH**")
+            st.write(f"- Persistencia: {garch_result['persistencia']:.3f}")
+            st.write(f"- VaR 95%: {garch_result['var_95']:.2%}")
+    
+    if not HMM_AVAILABLE and not GARCH_AVAILABLE:
+        st.info("💡 Instala `hmmlearn` y `arch` para habilitar análisis avanzado de regímenes.")
     
     st.markdown("---")
     
@@ -1175,7 +1662,7 @@ elif modo == "🎯 Recomendación compra/venta":
         st.markdown("""
         ### Sistema de Scoring
         
-        **Score Fundamental (máx 100 pts)**
+        **Score Fundamental (40% del total si HMM/GARCH activo, 57% si no)**
         - PER < 15: empresa "barata" respecto a beneficios
         - EV/EBITDA < 10: buena valoración considerando deuda
         - P/BV < 1.5: cotiza cerca de su valor contable
@@ -1183,12 +1670,25 @@ elif modo == "🎯 Recomendación compra/venta":
         - Deuda/Equity < 100%: endeudamiento controlado
         - Dividendo > 2%: retribución atractiva
         
-        **Score Técnico (máx 100 pts)**
+        **Score Técnico (30% del total si HMM/GARCH activo, 43% si no)**
         - Precio > MA50 y MA200: tendencia alcista
         - Golden Cross: MA50 cruza por encima de MA200 (señal alcista)
         - RSI 30-50: recuperándose de zona de sobreventa
         - MACD positivo: impulso alcista
         - Volumen creciente: confirma movimientos
+        
+        **Score Régimen - HMM + GARCH (30% del total)**
+        
+        *Hidden Markov Model (HMM):*
+        - Detecta 3 regímenes ocultos: Alcista, Lateral, Bajista
+        - Analiza patrones en retornos para identificar cambios de tendencia
+        - Calcula probabilidad de transición entre regímenes
+        
+        *GARCH (Volatilidad):*
+        - Predice volatilidad futura basándose en clusters históricos
+        - Volatilidad < 15% anual = Baja (positivo)
+        - Volatilidad > 30% anual = Alta (negativo)
+        - Persistencia alta = volatilidad tiende a mantenerse
         
         **Recomendación Final**
         | Score | Recomendación |
@@ -1233,13 +1733,36 @@ elif modo == "📊 Cartera (2+ activos)":
     **Datos cargados:** {len(prices)} días | **Desde:** {prices.index[0].strftime('%Y-%m-%d')} | **Hasta:** {prices.index[-1].strftime('%Y-%m-%d')}
     """)
 
+    # Calcular regímenes HMM/GARCH para cada activo (si disponible)
+    regimenes_cartera = {}
+    if HMM_AVAILABLE or GARCH_AVAILABLE:
+        with st.spinner("Analizando regímenes de mercado para cada activo..."):
+            for ticker in TICKERS:
+                returns = prices[ticker].pct_change().dropna()
+                hmm_res = detectar_regimenes_hmm(returns) if HMM_AVAILABLE else None
+                garch_res = predecir_volatilidad_garch(returns) if GARCH_AVAILABLE else None
+                regimenes_cartera[ticker] = {
+                    'hmm': hmm_res,
+                    'garch': garch_res
+                }
+
     # TABS
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📈 Cartera Óptima", 
-        "🎲 Simulación Monte Carlo", 
-        "⚖️ Rebalanceo", 
-        "📉 Frontera Eficiente"
-    ])
+    if HMM_AVAILABLE or GARCH_AVAILABLE:
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📈 Cartera Óptima", 
+            "🎲 Simulación Monte Carlo", 
+            "🔮 Regímenes HMM/GARCH",
+            "⚖️ Rebalanceo", 
+            "📉 Frontera Eficiente"
+        ])
+    else:
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📈 Cartera Óptima", 
+            "🎲 Simulación Monte Carlo", 
+            "⚖️ Rebalanceo", 
+            "📉 Frontera Eficiente"
+        ])
+        tab5 = None
 
     # TAB 1: CARTERA ÓPTIMA
     with tab1:
@@ -1359,8 +1882,169 @@ elif modo == "📊 Cartera (2+ activos)":
         })
         st.dataframe(scenarios, use_container_width=True, hide_index=True)
 
-    # TAB 3: REBALANCEO
-    with tab3:
+    # TAB 3: REGÍMENES HMM/GARCH
+    if tab5 is not None:  # Solo si HMM/GARCH está disponible
+        with tab3:
+            st.subheader("Análisis de Regímenes por Activo")
+            
+            if not regimenes_cartera:
+                st.info("Instala `hmmlearn` y `arch` para habilitar este análisis.")
+            else:
+                # Tabla resumen de regímenes
+                st.markdown("#### 📊 Resumen de Regímenes")
+                
+                resumen_data = []
+                for ticker in TICKERS:
+                    hmm_res = regimenes_cartera[ticker]['hmm']
+                    garch_res = regimenes_cartera[ticker]['garch']
+                    
+                    # Estado HMM
+                    if hmm_res:
+                        estado_hmm = hmm_res['estado_actual']
+                        prob_alcista = hmm_res['prob_alcista']
+                        emoji_hmm = '🟢' if estado_hmm == 'alcista' else '🟡' if estado_hmm == 'lateral' else '🔴'
+                    else:
+                        estado_hmm = 'N/A'
+                        prob_alcista = 0
+                        emoji_hmm = '⚪'
+                    
+                    # Volatilidad GARCH
+                    if garch_res:
+                        vol_pred = garch_res['vol_predicha_anual']
+                        cambio_vol = garch_res['cambio_vol_pct']
+                        emoji_vol = '🟢' if vol_pred < 0.20 else '🟡' if vol_pred < 0.35 else '🔴'
+                    else:
+                        vol_pred = 0
+                        cambio_vol = 0
+                        emoji_vol = '⚪'
+                    
+                    # Score combinado
+                    if hmm_res or garch_res:
+                        s_reg, _ = score_regimen_combinado(hmm_res, garch_res)
+                    else:
+                        s_reg = 50
+                    
+                    resumen_data.append({
+                        'Activo': ticker,
+                        'Régimen HMM': f"{emoji_hmm} {estado_hmm.capitalize() if estado_hmm != 'N/A' else 'N/A'}",
+                        'Prob. Alcista': f"{prob_alcista:.0%}" if hmm_res else 'N/A',
+                        'Vol. GARCH': f"{emoji_vol} {vol_pred:.1%}" if garch_res else 'N/A',
+                        'Δ Volatilidad': f"{cambio_vol:+.0f}%" if garch_res else 'N/A',
+                        'Score Régimen': f"{s_reg:.0f}/100"
+                    })
+                
+                resumen_df = pd.DataFrame(resumen_data)
+                st.dataframe(resumen_df, use_container_width=True, hide_index=True)
+                
+                # Recomendación basada en regímenes
+                st.markdown("#### 💡 Recomendación de Cartera basada en Regímenes")
+                
+                scores_regimen = []
+                for ticker in TICKERS:
+                    hmm_res = regimenes_cartera[ticker]['hmm']
+                    garch_res = regimenes_cartera[ticker]['garch']
+                    s_reg, _ = score_regimen_combinado(hmm_res, garch_res)
+                    scores_regimen.append(s_reg)
+                
+                # Calcular pesos ajustados por régimen
+                scores_array = np.array(scores_regimen)
+                if scores_array.sum() > 0:
+                    pesos_regimen = scores_array / scores_array.sum()
+                else:
+                    pesos_regimen = np.ones(len(TICKERS)) / len(TICKERS)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Pesos sugeridos (ajustados por régimen)**")
+                    ajuste_df = pd.DataFrame({
+                        'Activo': TICKERS,
+                        'Peso Sharpe': [f"{w:.1%}" for w in weights],
+                        'Peso por Régimen': [f"{w:.1%}" for w in pesos_regimen],
+                        'Score Régimen': [f"{s:.0f}" for s in scores_regimen]
+                    })
+                    st.dataframe(ajuste_df, use_container_width=True, hide_index=True)
+                
+                with col2:
+                    # Gráfico comparativo
+                    fig, ax = plt.subplots(figsize=(8, 5))
+                    x = np.arange(len(TICKERS))
+                    width = 0.35
+                    ax.bar(x - width/2, weights * 100, width, label='Sharpe Óptimo', color='steelblue')
+                    ax.bar(x + width/2, pesos_regimen * 100, width, label='Ajustado Régimen', color='coral')
+                    ax.set_ylabel('Peso (%)')
+                    ax.set_title('Pesos Óptimos vs Ajustados por Régimen')
+                    ax.set_xticks(x)
+                    ax.set_xticklabels(TICKERS, rotation=45)
+                    ax.legend()
+                    ax.grid(True, alpha=0.3, axis='y')
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                
+                # Detalle por activo
+                st.markdown("#### 📈 Detalle por Activo")
+                
+                ticker_detalle = st.selectbox("Selecciona activo para ver detalle", TICKERS)
+                
+                hmm_res = regimenes_cartera[ticker_detalle]['hmm']
+                garch_res = regimenes_cartera[ticker_detalle]['garch']
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if hmm_res:
+                        st.markdown(f"**HMM - {ticker_detalle}**")
+                        
+                        # Gráfico de regímenes
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        close = prices[ticker_detalle]
+                        estados = hmm_res['historial_estados']
+                        
+                        colores = {'alcista': '#00ff88', 'lateral': '#ffaa00', 'bajista': '#ff4444'}
+                        
+                        for i in range(min(len(estados), len(close))):
+                            if i < len(close) - 1:
+                                ax.axvspan(close.index[i], close.index[i+1], 
+                                          alpha=0.3, color=colores.get(estados[i], 'gray'), linewidth=0)
+                        
+                        ax.plot(close.index[-len(estados):], close.iloc[-len(estados):], 'b-', linewidth=1)
+                        ax.set_title(f'{ticker_detalle} - Regímenes HMM')
+                        ax.set_ylabel('Precio')
+                        ax.grid(True, alpha=0.3)
+                        st.pyplot(fig)
+                        
+                        st.write(f"Estado actual: **{hmm_res['estado_actual'].upper()}**")
+                        st.write(f"Prob. Alcista: {hmm_res['prob_alcista']:.1%}")
+                        st.write(f"Prob. Bajista: {hmm_res['prob_bajista']:.1%}")
+                    else:
+                        st.info("HMM no disponible para este activo")
+                
+                with col2:
+                    if garch_res:
+                        st.markdown(f"**GARCH - {ticker_detalle}**")
+                        
+                        # Gráfico de volatilidad
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        returns = prices[ticker_detalle].pct_change().dropna()
+                        vol_realizada = returns.rolling(window=22).std() * np.sqrt(252)
+                        
+                        ax.plot(vol_realizada.index, vol_realizada * 100, 'b-', linewidth=1, label='Vol. Realizada')
+                        ax.axhline(y=garch_res['vol_predicha_anual'] * 100, color='red', 
+                                  linestyle='--', linewidth=2, label=f"Predicha: {garch_res['vol_predicha_anual']:.1%}")
+                        ax.set_title(f'{ticker_detalle} - Volatilidad GARCH')
+                        ax.set_ylabel('Volatilidad (%)')
+                        ax.legend()
+                        ax.grid(True, alpha=0.3)
+                        st.pyplot(fig)
+                        
+                        st.write(f"Vol. Histórica: {garch_res['vol_historica_anual']:.1%}")
+                        st.write(f"Vol. Predicha: {garch_res['vol_predicha_anual']:.1%}")
+                        st.write(f"Persistencia: {garch_res['persistencia']:.3f}")
+                    else:
+                        st.info("GARCH no disponible para este activo")
+
+    # TAB 4: REBALANCEO
+    with tab4 if tab5 is not None else tab3:
         st.subheader("Análisis de Rebalanceo")
         
         rebalance_threshold = st.slider("Umbral de rebalanceo (%)", 1, 20, 5) / 100
@@ -1403,8 +2087,8 @@ elif modo == "📊 Cartera (2+ activos)":
         ax.grid(True, alpha=0.3, axis='y')
         st.pyplot(fig)
 
-    # TAB 4: FRONTERA EFICIENTE
-    with tab4:
+    # TAB 5: FRONTERA EFICIENTE
+    with tab5 if tab5 is not None else tab4:
         st.subheader("Frontera Eficiente")
         
         with st.spinner("Calculando frontera eficiente..."):
@@ -1439,5 +2123,10 @@ elif modo == "📊 Cartera (2+ activos)":
 # --------------------------------------------------
 # FOOTER
 # --------------------------------------------------
-st.sidebar.markdown("---")
-st.sidebar.caption("Creado por Pedro Juez Martel")
+st.markdown("---")
+st.markdown("""
+<small>
+<b>Disclaimer:</b> Esta herramienta es únicamente para fines educativos. 
+Los resultados pasados no garantizan rendimientos futuros.
+</small>
+""", unsafe_allow_html=True)
