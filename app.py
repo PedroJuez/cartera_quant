@@ -1037,7 +1037,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Modo de Análisis")
 modo = st.sidebar.radio(
     "¿Qué quieres analizar?",
-    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "📊 Cartera (2+ activos)"],
+    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "🌍 Análisis por Región", "📊 Cartera (2+ activos)"],
     index=0
 )
 
@@ -1049,6 +1049,20 @@ tickers_populares = {
     "España": ["BBVA.MC", "SAN.MC", "ITX.MC", "IBE.MC", "TEF.MC"],
     "ETFs": ["SPY", "QQQ", "VTI", "IWM"],
     "Bancos": ["BBVA.MC", "SAN.MC", "BNP.PA", "JPM", "BAC"],
+}
+
+# Regiones geográficas para el escáner
+REGIONES = {
+    "🇺🇸 USA Tech": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "NFLX", "ADBE", "CRM"],
+    "🇺🇸 USA Financiero": ["JPM", "BAC", "GS", "V", "MA", "WFC", "C", "AXP"],
+    "🇺🇸 USA Consumo": ["KO", "PEP", "MCD", "NKE", "SBUX", "WMT", "COST", "HD"],
+    "🇺🇸 USA Salud": ["JNJ", "PFE", "UNH", "ABBV", "MRK", "LLY", "TMO", "ABT"],
+    "🇪🇸 España (IBEX)": ["SAN.MC", "BBVA.MC", "ITX.MC", "IBE.MC", "TEF.MC", "REP.MC", "CABK.MC", "FER.MC", "AENA.MC", "AMS.MC"],
+    "🇩🇪 Alemania (DAX)": ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BAS.DE", "BMW.DE", "MBG.DE", "VOW3.DE"],
+    "🇫🇷 Francia (CAC)": ["MC.PA", "OR.PA", "TTE.PA", "SAN.PA", "AIR.PA", "BNP.PA", "ACA.PA", "SU.PA"],
+    "🇪🇺 Europa Mix": ["ASML.AS", "NVO", "NESN.SW", "ROG.SW", "NOVN.SW", "SHEL", "UL", "GSK"],
+    "🌍 ETFs Globales": ["SPY", "QQQ", "EEM", "VGK", "EFA", "VWO", "GLD", "SLV"],
+    "🌏 Asia": ["BABA", "TSM", "SONY", "TM", "NIO", "JD", "BIDU", "PDD"],
 }
 
 usar_predefinidos = st.sidebar.checkbox("Usar tickers predefinidos", value=False)
@@ -1067,6 +1081,14 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
             help="Ejemplo: AAPL, MSFT, SAN.MC"
         ).strip().upper()
     TICKERS = [TICKER_INDIVIDUAL] if TICKER_INDIVIDUAL else []
+elif modo == "🌍 Análisis por Región":
+    # Selector de regiones
+    regiones_seleccionadas = st.sidebar.multiselect(
+        "Selecciona regiones a analizar",
+        list(REGIONES.keys()),
+        default=["🇪🇸 España (IBEX)", "🇺🇸 USA Tech"]
+    )
+    TICKERS = []  # No se usa en este modo
 else:
     if usar_predefinidos:
         categoria = st.sidebar.selectbox("Categoría", list(tickers_populares.keys()))
@@ -1701,6 +1723,294 @@ elif modo == "🎯 Recomendación compra/venta":
         
         ⚠️ **Importante**: Esta herramienta es orientativa. No es asesoramiento financiero.
         """)
+
+# ==================================================
+# MODO ANÁLISIS POR REGIÓN
+# ==================================================
+elif modo == "🌍 Análisis por Región":
+    st.title("🌍 Análisis por Región Geográfica")
+    
+    if not regiones_seleccionadas:
+        st.warning("Selecciona al menos una región en el panel lateral.")
+        st.stop()
+    
+    # Función para analizar una acción
+    @st.cache_data(ttl=7200, show_spinner=False)
+    def analizar_accion_rapido(ticker):
+        """Analiza una acción y devuelve métricas resumidas."""
+        try:
+            stock = yf.Ticker(ticker)
+            hist = stock.history(period="1y")
+            
+            if hist.empty or len(hist) < 50:
+                return None
+            
+            # Info básica
+            try:
+                info = stock.info
+                nombre = info.get('shortName') or info.get('longName') or ticker
+                precio = info.get('currentPrice') or info.get('regularMarketPrice') or hist['Close'].iloc[-1]
+                currency = info.get('currency', 'USD')
+            except:
+                info = {}
+                nombre = ticker
+                precio = hist['Close'].iloc[-1]
+                currency = 'USD'
+            
+            # Calcular scores
+            s_fund, _ = score_fundamental(info)
+            s_tech, _ = score_tecnico(hist)
+            
+            # HMM y GARCH
+            returns = hist['Close'].pct_change().dropna()
+            hmm_res = detectar_regimenes_hmm(returns) if HMM_AVAILABLE else None
+            garch_res = predecir_volatilidad_garch(returns) if GARCH_AVAILABLE else None
+            
+            if hmm_res or garch_res:
+                s_regimen, _ = score_regimen_combinado(hmm_res, garch_res)
+                score_total = s_fund * 0.4 + s_tech * 0.3 + s_regimen * 0.3
+            else:
+                s_regimen = None
+                score_total = s_fund * 0.57 + s_tech * 0.43
+            
+            # Régimen HMM
+            if hmm_res:
+                regimen = hmm_res['estado_actual']
+                prob_alcista = hmm_res['prob_alcista']
+            else:
+                regimen = 'N/A'
+                prob_alcista = 0
+            
+            # Volatilidad GARCH
+            if garch_res:
+                vol_garch = garch_res['vol_predicha_anual']
+            else:
+                vol_garch = returns.std() * np.sqrt(252)
+            
+            # Recomendación
+            if score_total >= 80:
+                recomendacion = "🟢 COMPRA FUERTE"
+            elif score_total >= 65:
+                recomendacion = "🟢 COMPRA"
+            elif score_total >= 50:
+                recomendacion = "🟡 MANTENER"
+            elif score_total >= 35:
+                recomendacion = "🔴 VENTA"
+            else:
+                recomendacion = "🔴 VENTA FUERTE"
+            
+            return {
+                'ticker': ticker,
+                'nombre': nombre[:25] + '...' if len(nombre) > 25 else nombre,
+                'precio': precio,
+                'currency': currency,
+                'score_total': score_total,
+                'score_fund': s_fund,
+                'score_tech': s_tech,
+                'score_regimen': s_regimen,
+                'regimen': regimen,
+                'prob_alcista': prob_alcista,
+                'vol_garch': vol_garch,
+                'recomendacion': recomendacion
+            }
+        except Exception as e:
+            return None
+    
+    # Analizar todas las acciones seleccionadas
+    resultados_por_region = {}
+    todos_resultados = []
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total_acciones = sum(len(REGIONES[r]) for r in regiones_seleccionadas)
+    acciones_procesadas = 0
+    
+    for region in regiones_seleccionadas:
+        tickers_region = REGIONES[region]
+        resultados_region = []
+        
+        for ticker in tickers_region:
+            status_text.text(f"Analizando {ticker}...")
+            resultado = analizar_accion_rapido(ticker)
+            
+            if resultado:
+                resultado['region'] = region
+                resultados_region.append(resultado)
+                todos_resultados.append(resultado)
+            
+            acciones_procesadas += 1
+            progress_bar.progress(acciones_procesadas / total_acciones)
+        
+        resultados_por_region[region] = resultados_region
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    if not todos_resultados:
+        st.error("No se pudieron obtener datos. Puede ser un problema temporal con Yahoo Finance.")
+        st.stop()
+    
+    # --- TOP 10 GLOBAL ---
+    st.markdown("## 🏆 Top 10 Global - Mejores Oportunidades")
+    
+    top_global = sorted(todos_resultados, key=lambda x: x['score_total'], reverse=True)[:10]
+    
+    top_df = pd.DataFrame([{
+        'Rank': i+1,
+        'Ticker': r['ticker'],
+        'Nombre': r['nombre'],
+        'Región': r['region'].split()[0],  # Solo emoji
+        'Score': f"{r['score_total']:.0f}",
+        'Régimen': f"{'🟢' if r['regimen']=='alcista' else '🟡' if r['regimen']=='lateral' else '🔴' if r['regimen']=='bajista' else '⚪'} {r['regimen'].capitalize() if r['regimen'] != 'N/A' else 'N/A'}",
+        'Vol.': f"{r['vol_garch']:.0%}",
+        'Recomendación': r['recomendacion']
+    } for i, r in enumerate(top_global)])
+    
+    st.dataframe(top_df, use_container_width=True, hide_index=True)
+    
+    # --- FILTROS ---
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        filtro_regimen = st.selectbox(
+            "Filtrar por régimen",
+            ["Todos", "🟢 Solo Alcistas", "🟡 Solo Laterales", "🔴 Solo Bajistas"]
+        )
+    
+    with col2:
+        filtro_recom = st.selectbox(
+            "Filtrar por recomendación",
+            ["Todas", "Solo COMPRA FUERTE", "Solo COMPRA", "Solo MANTENER", "Solo VENTA"]
+        )
+    
+    with col3:
+        ordenar_por = st.selectbox(
+            "Ordenar por",
+            ["Score Total", "Score Fundamental", "Score Técnico", "Menor Volatilidad", "Mayor Prob. Alcista"]
+        )
+    
+    # Aplicar filtros
+    resultados_filtrados = todos_resultados.copy()
+    
+    if filtro_regimen == "🟢 Solo Alcistas":
+        resultados_filtrados = [r for r in resultados_filtrados if r['regimen'] == 'alcista']
+    elif filtro_regimen == "🟡 Solo Laterales":
+        resultados_filtrados = [r for r in resultados_filtrados if r['regimen'] == 'lateral']
+    elif filtro_regimen == "🔴 Solo Bajistas":
+        resultados_filtrados = [r for r in resultados_filtrados if r['regimen'] == 'bajista']
+    
+    if "COMPRA FUERTE" in filtro_recom:
+        resultados_filtrados = [r for r in resultados_filtrados if "COMPRA FUERTE" in r['recomendacion']]
+    elif "Solo COMPRA" in filtro_recom:
+        resultados_filtrados = [r for r in resultados_filtrados if "COMPRA" in r['recomendacion']]
+    elif "MANTENER" in filtro_recom:
+        resultados_filtrados = [r for r in resultados_filtrados if "MANTENER" in r['recomendacion']]
+    elif "VENTA" in filtro_recom:
+        resultados_filtrados = [r for r in resultados_filtrados if "VENTA" in r['recomendacion']]
+    
+    # Ordenar
+    if ordenar_por == "Score Total":
+        resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['score_total'], reverse=True)
+    elif ordenar_por == "Score Fundamental":
+        resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['score_fund'], reverse=True)
+    elif ordenar_por == "Score Técnico":
+        resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['score_tech'], reverse=True)
+    elif ordenar_por == "Menor Volatilidad":
+        resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['vol_garch'])
+    elif ordenar_por == "Mayor Prob. Alcista":
+        resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['prob_alcista'], reverse=True)
+    
+    # --- RESULTADOS POR REGIÓN ---
+    st.markdown("---")
+    st.markdown("## 📊 Resultados por Región")
+    
+    for region in regiones_seleccionadas:
+        resultados_region = [r for r in resultados_filtrados if r['region'] == region]
+        
+        if not resultados_region:
+            continue
+        
+        with st.expander(f"{region} ({len(resultados_region)} acciones)", expanded=True):
+            # Métricas resumen de la región
+            avg_score = np.mean([r['score_total'] for r in resultados_region])
+            alcistas = sum(1 for r in resultados_region if r['regimen'] == 'alcista')
+            bajistas = sum(1 for r in resultados_region if r['regimen'] == 'bajista')
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Score Medio", f"{avg_score:.0f}/100")
+            col2.metric("Acciones Alcistas", f"{alcistas}/{len(resultados_region)}")
+            col3.metric("Acciones Bajistas", f"{bajistas}/{len(resultados_region)}")
+            col4.metric("Top Score", f"{max(r['score_total'] for r in resultados_region):.0f}")
+            
+            # Tabla de la región
+            region_df = pd.DataFrame([{
+                'Ticker': r['ticker'],
+                'Nombre': r['nombre'],
+                'Precio': f"{r['precio']:.2f} {r['currency']}",
+                'Score Total': f"{r['score_total']:.0f}",
+                'Fund.': f"{r['score_fund']}",
+                'Téc.': f"{r['score_tech']}",
+                'Rég.': f"{r['score_regimen']:.0f}" if r['score_regimen'] else 'N/A',
+                'Régimen': f"{'🟢' if r['regimen']=='alcista' else '🟡' if r['regimen']=='lateral' else '🔴' if r['regimen']=='bajista' else '⚪'}",
+                'Vol.': f"{r['vol_garch']:.0%}",
+                'Recomendación': r['recomendacion']
+            } for r in resultados_region])
+            
+            st.dataframe(region_df, use_container_width=True, hide_index=True)
+    
+    # --- COMPARATIVA ENTRE REGIONES ---
+    st.markdown("---")
+    st.markdown("## 📈 Comparativa entre Regiones")
+    
+    comparativa_data = []
+    for region in regiones_seleccionadas:
+        resultados_region = resultados_por_region.get(region, [])
+        if resultados_region:
+            comparativa_data.append({
+                'Región': region,
+                'Acciones': len(resultados_region),
+                'Score Medio': np.mean([r['score_total'] for r in resultados_region]),
+                'Alcistas': sum(1 for r in resultados_region if r['regimen'] == 'alcista'),
+                'Vol. Media': np.mean([r['vol_garch'] for r in resultados_region]),
+                'Mejor Acción': max(resultados_region, key=lambda x: x['score_total'])['ticker']
+            })
+    
+    if comparativa_data:
+        comparativa_df = pd.DataFrame(comparativa_data)
+        comparativa_df = comparativa_df.sort_values('Score Medio', ascending=False)
+        comparativa_df['Score Medio'] = comparativa_df['Score Medio'].apply(lambda x: f"{x:.1f}")
+        comparativa_df['Vol. Media'] = comparativa_df['Vol. Media'].apply(lambda x: f"{x:.0%}")
+        comparativa_df['% Alcistas'] = comparativa_df.apply(lambda x: f"{x['Alcistas']/x['Acciones']*100:.0f}%", axis=1)
+        
+        st.dataframe(comparativa_df[['Región', 'Acciones', 'Score Medio', '% Alcistas', 'Vol. Media', 'Mejor Acción']], 
+                    use_container_width=True, hide_index=True)
+        
+        # Gráfico de barras comparativo
+        fig, ax = plt.subplots(figsize=(10, 5))
+        regiones_nombres = [r['Región'].split('(')[0].strip() for r in comparativa_data]
+        scores = [float(r['Score Medio']) if isinstance(r['Score Medio'], str) else r['Score Medio'] for r in comparativa_data]
+        
+        # Ordenar por score
+        sorted_indices = np.argsort(scores)[::-1]
+        regiones_nombres = [regiones_nombres[i] for i in sorted_indices]
+        scores = [scores[i] for i in sorted_indices]
+        
+        colors = ['#00ff88' if s >= 65 else '#ffaa00' if s >= 50 else '#ff4444' for s in scores]
+        bars = ax.barh(regiones_nombres, scores, color=colors)
+        
+        ax.set_xlabel('Score Medio')
+        ax.set_title('Comparativa de Regiones por Score Medio')
+        ax.set_xlim(0, 100)
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        for bar, score in zip(bars, scores):
+            ax.text(score + 2, bar.get_y() + bar.get_height()/2, f'{score:.0f}', 
+                   va='center', fontsize=10)
+        
+        plt.tight_layout()
+        st.pyplot(fig)
 
 # ==================================================
 # MODO CARTERA
