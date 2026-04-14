@@ -69,12 +69,47 @@ def obtener_info_accion(ticker, periodo="1y"):
         try:
             info = stock.info
         except Exception:
-            # Si falla info, usar datos básicos
-            info = {
-                'longName': ticker,
-                'currentPrice': hist['Close'].iloc[-1] if not hist.empty else None,
-                'currency': 'USD'
-            }
+            info = {}
+        
+        # Si faltan datos fundamentales, intentar calcularlos de otras fuentes
+        if not info.get('trailingPE') or not info.get('returnOnEquity'):
+            try:
+                # Intentar obtener de financials
+                financials = stock.quarterly_financials
+                balance = stock.quarterly_balance_sheet
+                
+                if not financials.empty and not balance.empty:
+                    # Calcular PER si no existe
+                    if not info.get('trailingPE') and info.get('currentPrice'):
+                        try:
+                            net_income = financials.loc['Net Income'].iloc[0] if 'Net Income' in financials.index else None
+                            shares = info.get('sharesOutstanding', 0)
+                            if net_income and shares and net_income > 0:
+                                eps = (net_income * 4) / shares  # Anualizado
+                                info['trailingPE'] = info['currentPrice'] / eps
+                        except:
+                            pass
+                    
+                    # Calcular ROE si no existe
+                    if not info.get('returnOnEquity'):
+                        try:
+                            net_income = financials.loc['Net Income'].iloc[0] if 'Net Income' in financials.index else None
+                            equity = balance.loc['Stockholders Equity'].iloc[0] if 'Stockholders Equity' in balance.index else None
+                            if net_income and equity and equity > 0:
+                                info['returnOnEquity'] = (net_income * 4) / equity  # Anualizado
+                        except:
+                            pass
+            except:
+                pass
+        
+        # Si no hay precio actual, usar el último del histórico
+        if not info.get('currentPrice') and not info.get('regularMarketPrice'):
+            if not hist.empty:
+                info['currentPrice'] = hist['Close'].iloc[-1]
+        
+        # Si no hay nombre, usar ticker
+        if not info.get('longName') and not info.get('shortName'):
+            info['longName'] = ticker
         
         market_cap = info.get('marketCap', 0)
         free_cash_flow = info.get('freeCashflow', 0)
@@ -88,6 +123,18 @@ def obtener_info_accion(ticker, periodo="1y"):
     except Exception as e:
         st.warning(f"Error parcial obteniendo datos de {ticker}: {e}")
         return None
+
+
+def obtener_accion_con_fallback(tickers_fallback, periodo="1y"):
+    """Intenta obtener datos de una lista de tickers, usando el primero que funcione."""
+    for ticker in tickers_fallback:
+        try:
+            data = obtener_info_accion(ticker, periodo)
+            if data and not data['history'].empty:
+                return data, ticker
+        except:
+            continue
+    return None, None
 
 
 def formatear_numero(num, decimales=2):
@@ -355,10 +402,13 @@ def score_fundamental(info):
     """Calcula el score fundamental (0-100)."""
     score = 0
     detalles = {}
+    indicadores_con_datos = 0
+    total_indicadores = 6
     
     # PER (0-20 puntos)
     per = info.get('trailingPE')
-    if per:
+    if per and per > 0:
+        indicadores_con_datos += 1
         if per < 10:
             pts = 20
         elif per < 15:
@@ -373,11 +423,13 @@ def score_fundamental(info):
         detalles['PER'] = {'valor': f"{per:.1f}", 'puntos': pts, 'max': 20, 
                           'estado': '🟢' if pts >= 15 else '🟡' if pts >= 10 else '🔴'}
     else:
-        detalles['PER'] = {'valor': 'N/A', 'puntos': 0, 'max': 20, 'estado': '⚪'}
+        score += 10  # Puntos neutrales
+        detalles['PER'] = {'valor': 'N/A', 'puntos': 10, 'max': 20, 'estado': '⚪'}
     
     # EV/EBITDA (0-20 puntos)
     ev_ebitda = info.get('enterpriseToEbitda')
-    if ev_ebitda:
+    if ev_ebitda and ev_ebitda > 0:
+        indicadores_con_datos += 1
         if ev_ebitda < 6:
             pts = 20
         elif ev_ebitda < 10:
@@ -392,11 +444,13 @@ def score_fundamental(info):
         detalles['EV/EBITDA'] = {'valor': f"{ev_ebitda:.1f}", 'puntos': pts, 'max': 20,
                                  'estado': '🟢' if pts >= 15 else '🟡' if pts >= 10 else '🔴'}
     else:
-        detalles['EV/EBITDA'] = {'valor': 'N/A', 'puntos': 0, 'max': 20, 'estado': '⚪'}
+        score += 10  # Puntos neutrales
+        detalles['EV/EBITDA'] = {'valor': 'N/A', 'puntos': 10, 'max': 20, 'estado': '⚪'}
     
     # P/BV (0-15 puntos)
     p_bv = info.get('priceToBook')
-    if p_bv:
+    if p_bv and p_bv > 0:
+        indicadores_con_datos += 1
         if p_bv < 1:
             pts = 15
         elif p_bv < 1.5:
@@ -411,11 +465,13 @@ def score_fundamental(info):
         detalles['P/BV'] = {'valor': f"{p_bv:.2f}", 'puntos': pts, 'max': 15,
                            'estado': '🟢' if pts >= 12 else '🟡' if pts >= 8 else '🔴'}
     else:
-        detalles['P/BV'] = {'valor': 'N/A', 'puntos': 0, 'max': 15, 'estado': '⚪'}
+        score += 7  # Puntos neutrales
+        detalles['P/BV'] = {'valor': 'N/A', 'puntos': 7, 'max': 15, 'estado': '⚪'}
     
     # ROE (0-20 puntos)
     roe = info.get('returnOnEquity')
     if roe:
+        indicadores_con_datos += 1
         roe_pct = roe * 100
         if roe_pct > 20:
             pts = 20
@@ -431,11 +487,13 @@ def score_fundamental(info):
         detalles['ROE'] = {'valor': f"{roe_pct:.1f}%", 'puntos': pts, 'max': 20,
                           'estado': '🟢' if pts >= 15 else '🟡' if pts >= 10 else '🔴'}
     else:
-        detalles['ROE'] = {'valor': 'N/A', 'puntos': 0, 'max': 20, 'estado': '⚪'}
+        score += 10  # Puntos neutrales
+        detalles['ROE'] = {'valor': 'N/A', 'puntos': 10, 'max': 20, 'estado': '⚪'}
     
     # Deuda/Equity (0-15 puntos)
     debt_equity = info.get('debtToEquity')
-    if debt_equity:
+    if debt_equity is not None and debt_equity >= 0:
+        indicadores_con_datos += 1
         if debt_equity < 50:
             pts = 15
         elif debt_equity < 100:
@@ -450,11 +508,13 @@ def score_fundamental(info):
         detalles['Deuda/Equity'] = {'valor': f"{debt_equity:.0f}%", 'puntos': pts, 'max': 15,
                                     'estado': '🟢' if pts >= 12 else '🟡' if pts >= 8 else '🔴'}
     else:
-        detalles['Deuda/Equity'] = {'valor': 'N/A', 'puntos': 0, 'max': 15, 'estado': '⚪'}
+        score += 7  # Puntos neutrales
+        detalles['Deuda/Equity'] = {'valor': 'N/A', 'puntos': 7, 'max': 15, 'estado': '⚪'}
     
     # Dividend Yield (0-10 puntos)
     div_yield = info.get('dividendYield')
-    if div_yield:
+    if div_yield and div_yield > 0:
+        indicadores_con_datos += 1
         div_pct = div_yield * 100
         if div_pct > 4:
             pts = 10
@@ -470,7 +530,11 @@ def score_fundamental(info):
         detalles['Dividendo'] = {'valor': f"{div_pct:.2f}%", 'puntos': pts, 'max': 10,
                                  'estado': '🟢' if pts >= 8 else '🟡' if pts >= 6 else '🔴'}
     else:
-        detalles['Dividendo'] = {'valor': 'N/A', 'puntos': 0, 'max': 10, 'estado': '⚪'}
+        score += 5  # Puntos neutrales
+        detalles['Dividendo'] = {'valor': 'N/A', 'puntos': 5, 'max': 10, 'estado': '⚪'}
+    
+    # Añadir indicador de calidad de datos
+    detalles['_datos_disponibles'] = f"{indicadores_con_datos}/{total_indicadores}"
     
     return score, detalles
 
@@ -1190,13 +1254,31 @@ if modo == "🔍 Acción individual":
         st.stop()
     
     ticker = TICKERS[0]
+    ticker_original = ticker
+    
+    # Lista de fallback si el ticker principal falla
+    TICKERS_FALLBACK = [ticker, "SAN.MC", "BBVA.MC", "AAPL", "MSFT"]
+    # Eliminar duplicados manteniendo orden
+    TICKERS_FALLBACK = list(dict.fromkeys(TICKERS_FALLBACK))
     
     try:
         with st.spinner(f"Cargando datos de {ticker}..."):
             data_accion = obtener_info_accion(ticker, periodo)
         
-        if data_accion is None:
-            st.error(f"No se pudieron obtener datos para {ticker}. Verifica que el ticker sea correcto.")
+        # Si no hay datos o el histórico está vacío, probar con fallback
+        if data_accion is None or data_accion['history'].empty:
+            st.warning(f"⚠️ No se pudieron cargar datos de {ticker}. Probando alternativas...")
+            
+            for fallback_ticker in TICKERS_FALLBACK[1:]:
+                with st.spinner(f"Probando con {fallback_ticker}..."):
+                    data_accion = obtener_info_accion(fallback_ticker, periodo)
+                    if data_accion and not data_accion['history'].empty:
+                        ticker = fallback_ticker
+                        st.info(f"✅ Mostrando datos de {ticker} como alternativa.")
+                        break
+        
+        if data_accion is None or data_accion['history'].empty:
+            st.error(f"No se pudieron obtener datos. Verifica tu conexión a internet.")
             st.stop()
     
     except Exception as e:
@@ -1388,19 +1470,35 @@ elif modo == "🎯 Recomendación compra/venta":
         st.stop()
     
     ticker = TICKERS[0]
+    ticker_original = ticker
+    
+    # Lista de fallback si el ticker principal falla
+    TICKERS_FALLBACK = [ticker, "SAN.MC", "BBVA.MC", "AAPL", "MSFT"]
+    TICKERS_FALLBACK = list(dict.fromkeys(TICKERS_FALLBACK))
     
     try:
         with st.spinner(f"Analizando {ticker}..."):
-            # Usar solo una llamada para obtener todo
             data_accion = obtener_info_accion(ticker, "1y")
         
-        if data_accion is None:
-            st.error(f"No se pudieron obtener datos para {ticker}. Verifica que el ticker sea correcto.")
+        # Si no hay datos o el histórico está vacío, probar con fallback
+        if data_accion is None or data_accion['history'].empty:
+            st.warning(f"⚠️ No se pudieron cargar datos de {ticker}. Probando alternativas...")
+            
+            for fallback_ticker in TICKERS_FALLBACK[1:]:
+                with st.spinner(f"Probando con {fallback_ticker}..."):
+                    data_accion = obtener_info_accion(fallback_ticker, "1y")
+                    if data_accion and not data_accion['history'].empty:
+                        ticker = fallback_ticker
+                        st.info(f"✅ Mostrando análisis de {ticker} como alternativa.")
+                        break
+        
+        if data_accion is None or data_accion['history'].empty:
+            st.error(f"No se pudieron obtener datos. Verifica tu conexión a internet.")
             st.stop()
         
         info = data_accion['info']
         hist = data_accion['history']
-        hist_largo = hist  # Reutilizar los mismos datos
+        hist_largo = hist
         
     except Exception as e:
         if "RateLimit" in str(type(e).__name__) or "rate" in str(e).lower():
