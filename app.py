@@ -1566,8 +1566,12 @@ elif modo == "🎯 Recomendación compra/venta":
         st.progress(s_fund / 100)
         
         for indicador, datos in detalles_fund.items():
-            if indicador != 'error':
+            if indicador != 'error' and not indicador.startswith('_'):
                 st.markdown(f"{datos['estado']} **{indicador}**: {datos['valor']} ({datos['puntos']}/{datos['max']} pts)")
+        
+        # Mostrar calidad de datos
+        if '_datos_disponibles' in detalles_fund:
+            st.caption(f"📊 Datos disponibles: {detalles_fund['_datos_disponibles']}")
     
     with col2:
         st.markdown(f"### 📈 Score Técnico: {s_tech}/100")
