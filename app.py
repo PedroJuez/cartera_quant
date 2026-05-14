@@ -1115,7 +1115,7 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
         TICKER_INDIVIDUAL = st.sidebar.selectbox("Selecciona acción", todas_acciones)
     else:
         busqueda_input = st.sidebar.text_input(
-            "Indica nombre de la empresa",
+            "Indica nombre de la empresa o ticker",
             value="Repsol",
             help="Ejemplo: Repsol, Apple, SAN.MC"
         ).strip()
@@ -1264,29 +1264,12 @@ if modo == "🔍 Acción individual":
     ticker = TICKERS[0]
     ticker_original = ticker
     
-    # Lista de fallback si el ticker principal falla
-    TICKERS_FALLBACK = [ticker, "SAN.MC", "BBVA.MC", "AAPL", "MSFT"]
-    # Eliminar duplicados manteniendo orden
-    TICKERS_FALLBACK = list(dict.fromkeys(TICKERS_FALLBACK))
-    
     try:
         with st.spinner(f"Cargando datos de {ticker}..."):
             data_accion = obtener_info_accion(ticker, periodo)
         
-        # Si no hay datos o el histórico está vacío, probar con fallback
         if data_accion is None or data_accion['history'].empty:
-            st.warning(f"⚠️ No se pudieron cargar datos de {ticker}. Probando alternativas...")
-            
-            for fallback_ticker in TICKERS_FALLBACK[1:]:
-                with st.spinner(f"Probando con {fallback_ticker}..."):
-                    data_accion = obtener_info_accion(fallback_ticker, periodo)
-                    if data_accion and not data_accion['history'].empty:
-                        ticker = fallback_ticker
-                        st.info(f"✅ Mostrando datos de {ticker} como alternativa.")
-                        break
-        
-        if data_accion is None or data_accion['history'].empty:
-            st.error(f"No se pudieron obtener datos. Verifica tu conexión a internet.")
+            st.error(f"No se pudieron cargar datos de '{ticker_original}'. Comprueba que el nombre de empresa o ticker sea correcto.")
             st.stop()
     
     except Exception as e:
@@ -1480,28 +1463,12 @@ elif modo == "🎯 Recomendación compra/venta":
     ticker = TICKERS[0]
     ticker_original = ticker
     
-    # Lista de fallback si el ticker principal falla
-    TICKERS_FALLBACK = [ticker, "SAN.MC", "BBVA.MC", "AAPL", "MSFT"]
-    TICKERS_FALLBACK = list(dict.fromkeys(TICKERS_FALLBACK))
-    
     try:
         with st.spinner(f"Analizando {ticker}..."):
             data_accion = obtener_info_accion(ticker, "1y")
         
-        # Si no hay datos o el histórico está vacío, probar con fallback
         if data_accion is None or data_accion['history'].empty:
-            st.warning(f"⚠️ No se pudieron cargar datos de {ticker}. Probando alternativas...")
-            
-            for fallback_ticker in TICKERS_FALLBACK[1:]:
-                with st.spinner(f"Probando con {fallback_ticker}..."):
-                    data_accion = obtener_info_accion(fallback_ticker, "1y")
-                    if data_accion and not data_accion['history'].empty:
-                        ticker = fallback_ticker
-                        st.info(f"✅ Mostrando análisis de {ticker} como alternativa.")
-                        break
-        
-        if data_accion is None or data_accion['history'].empty:
-            st.error(f"No se pudieron obtener datos. Verifica tu conexión a internet.")
+            st.error(f"No se pudieron cargar datos de '{ticker_original}'. Comprueba que el nombre de empresa o ticker sea correcto.")
             st.stop()
         
         info = data_accion['info']
