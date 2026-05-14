@@ -121,7 +121,7 @@ def obtener_info_accion(ticker, periodo="1y"):
             'p_fcf': p_fcf
         }
     except Exception as e:
-        st.warning(f"Error parcial obteniendo datos de {ticker}: {e}")
+        # Silenciar el error en la UI, la función que llama ya maneja si es None
         return None
 
 
@@ -1135,6 +1135,7 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
                         TICKER_INDIVIDUAL = resultados_yahoo[0]['ticker']
                     else:
                         TICKER_INDIVIDUAL = busqueda_input.upper()
+                        st.sidebar.warning(f"No se ha encontrado ninguna empresa llamada '{busqueda_input}'. Se intentará buscar como ticker directamente.")
             
             if TICKER_INDIVIDUAL:
                 st.sidebar.caption(f"Ticker seleccionado: **{TICKER_INDIVIDUAL}**")
