@@ -1166,7 +1166,7 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
                         TICKER_INDIVIDUAL = resultados_yahoo[0]['ticker']
                     else:
                         TICKER_INDIVIDUAL = busqueda_input.upper()
-                        st.sidebar.warning(f"No se ha encontrado ninguna empresa llamada '{busqueda_input}'. Usa el '🔎 Buscar ticker por nombre' de arriba si no sabes el ticker exacto.")
+                        st.sidebar.warning(f"No se ha encontrado ninguna empresa llamada '{busqueda_input}'. Usa el '🔎 Buscar ticker por nombre' de arriba para buscar por nombre de la empresa e introduce directamente el ticker.")
             
             if TICKER_INDIVIDUAL:
                 st.sidebar.caption(f"Ticker seleccionado: **{TICKER_INDIVIDUAL}**")
