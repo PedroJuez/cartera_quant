@@ -1065,6 +1065,37 @@ def score_regimen_combinado(hmm_result, garch_result):
 # --------------------------------------------------
 st.sidebar.title("⚙️ Parámetros")
 
+# Buscador de tickers
+with st.sidebar.expander("🔎 Buscar ticker por nombre"):
+    busqueda = st.text_input("Nombre de empresa para buscar ticker", placeholder="Ej: Inditex, Apple, BBVA...")
+    
+    if busqueda:
+        # Primero buscar en diccionario local
+        resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
+                              if busqueda.lower() in k.lower()]
+        
+        if resultados_locales:
+            st.markdown("**Resultados:**")
+            for nombre, t in resultados_locales[:5]:
+                st.code(f"{t} → {nombre}")
+        
+        # Buscar en Yahoo Finance
+        resultados_yahoo = buscar_ticker(busqueda)
+        
+        if resultados_yahoo:
+            st.markdown("**Más resultados:**")
+            for r in resultados_yahoo[:5]:
+                if r['ticker'] not in [v for k, v in resultados_locales]:
+                    st.code(f"{r['ticker']} → {r['nombre']} ({r['bolsa']})")
+        
+        if not resultados_locales and not resultados_yahoo:
+            st.warning("No se encontraron resultados")
+    
+    st.caption("💡 España: añade .MC (ej: SAN.MC)")
+    st.caption("💡 Alemania: añade .DE (ej: BMW.DE)")
+    st.caption("💡 Francia: añade .PA (ej: BNP.PA)")
+
+st.sidebar.markdown("---")
 
 # Modo de análisis
 st.sidebar.subheader("🎯 Modo de Análisis")
@@ -1135,7 +1166,7 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
                         TICKER_INDIVIDUAL = resultados_yahoo[0]['ticker']
                     else:
                         TICKER_INDIVIDUAL = busqueda_input.upper()
-                        st.sidebar.warning(f"No se ha encontrado ninguna empresa llamada '{busqueda_input}'. Se intentará buscar como ticker directamente.")
+                        st.sidebar.warning(f"No se ha encontrado ninguna empresa llamada '{busqueda_input}'. Usa el '🔎 Buscar ticker por nombre' de arriba si no sabes el ticker exacto.")
             
             if TICKER_INDIVIDUAL:
                 st.sidebar.caption(f"Ticker seleccionado: **{TICKER_INDIVIDUAL}**")
