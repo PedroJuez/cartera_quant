@@ -1065,37 +1065,6 @@ def score_regimen_combinado(hmm_result, garch_result):
 # --------------------------------------------------
 st.sidebar.title("⚙️ Parámetros")
 
-# Buscador de tickers
-with st.sidebar.expander("🔎 Buscar ticker por nombre"):
-    busqueda = st.text_input("Nombre de empresa", placeholder="Ej: Inditex, Apple, BBVA...")
-    
-    if busqueda:
-        # Primero buscar en diccionario local
-        resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
-                              if busqueda.lower() in k.lower()]
-        
-        if resultados_locales:
-            st.markdown("**Resultados:**")
-            for nombre, ticker in resultados_locales[:5]:
-                st.code(f"{ticker} → {nombre}")
-        
-        # Buscar en Yahoo Finance
-        resultados_yahoo = buscar_ticker(busqueda)
-        
-        if resultados_yahoo:
-            st.markdown("**Más resultados:**")
-            for r in resultados_yahoo[:5]:
-                if r['ticker'] not in [v for k, v in resultados_locales]:
-                    st.code(f"{r['ticker']} → {r['nombre']} ({r['bolsa']})")
-        
-        if not resultados_locales and not resultados_yahoo:
-            st.warning("No se encontraron resultados")
-    
-    st.caption("💡 España: añade .MC (ej: SAN.MC)")
-    st.caption("💡 Alemania: añade .DE (ej: BMW.DE)")
-    st.caption("💡 Francia: añade .PA (ej: BNP.PA)")
-
-st.sidebar.markdown("---")
 
 # Modo de análisis
 st.sidebar.subheader("🎯 Modo de Análisis")
@@ -1145,11 +1114,31 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
         todas_acciones = sorted(list(set(todas_acciones)))
         TICKER_INDIVIDUAL = st.sidebar.selectbox("Selecciona acción", todas_acciones)
     else:
-        TICKER_INDIVIDUAL = st.sidebar.text_input(
-            "Introduce ticker",
-            value="SAN.MC",
-            help="Ejemplo: AAPL, MSFT, SAN.MC"
-        ).strip().upper()
+        busqueda_input = st.sidebar.text_input(
+            "Indica nombre de la empresa",
+            value="Repsol",
+            help="Ejemplo: Repsol, Apple, SAN.MC"
+        ).strip()
+        
+        TICKER_INDIVIDUAL = ""
+        if busqueda_input:
+            if busqueda_input.upper() in EMPRESAS_COMUNES.values():
+                TICKER_INDIVIDUAL = busqueda_input.upper()
+            else:
+                resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
+                                      if busqueda_input.lower() in k.lower()]
+                if resultados_locales:
+                    TICKER_INDIVIDUAL = resultados_locales[0][1]
+                else:
+                    resultados_yahoo = buscar_ticker(busqueda_input)
+                    if resultados_yahoo:
+                        TICKER_INDIVIDUAL = resultados_yahoo[0]['ticker']
+                    else:
+                        TICKER_INDIVIDUAL = busqueda_input.upper()
+            
+            if TICKER_INDIVIDUAL:
+                st.sidebar.caption(f"Ticker seleccionado: **{TICKER_INDIVIDUAL}**")
+
     TICKERS = [TICKER_INDIVIDUAL] if TICKER_INDIVIDUAL else []
 elif modo == "🌍 Análisis por Región":
     # Selector de regiones
@@ -1166,11 +1155,30 @@ else:
         st.sidebar.write(f"Tickers: {', '.join(TICKERS)}")
     else:
         tickers_input = st.sidebar.text_input(
-            "Introduce tickers (separados por coma)",
-            value="AAPL, MSFT, SAN.MC, NVO",
-            help="Ejemplo: AAPL, MSFT, GOOGL. Para España añade .MC (ej: SAN.MC)"
+            "Indica nombres o tickers (separados por coma)",
+            value="Apple, Microsoft, SAN.MC",
+            help="Ejemplo: Apple, MSFT, Banco Santander"
         )
-        TICKERS = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+        
+        nombres = [t.strip() for t in tickers_input.split(",") if t.strip()]
+        TICKERS = []
+        for nombre in nombres:
+            if nombre.upper() in EMPRESAS_COMUNES.values():
+                TICKERS.append(nombre.upper())
+            else:
+                resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
+                                      if nombre.lower() in k.lower()]
+                if resultados_locales:
+                    TICKERS.append(resultados_locales[0][1])
+                else:
+                    resultados_yahoo = buscar_ticker(nombre)
+                    if resultados_yahoo:
+                        TICKERS.append(resultados_yahoo[0]['ticker'])
+                    else:
+                        TICKERS.append(nombre.upper())
+        
+        if TICKERS:
+            st.sidebar.caption(f"Tickers seleccionados: **{', '.join(TICKERS)}**")
 
 periodo = st.sidebar.selectbox(
     "Período histórico", 
