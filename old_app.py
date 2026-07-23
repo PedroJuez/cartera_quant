@@ -26,234 +26,6 @@ try:
 except ImportError:
     GARCH_AVAILABLE = False
 
-
-# --------------------------------------------------
-# DATOS DE BONOS Y ETFs
-# --------------------------------------------------
-
-# ETFs organizados por categoría
-ETFs_POR_CATEGORIA = {
-    "📈 Renta Variable USA": {
-        "SPY": "S&P 500",
-        "QQQ": "Nasdaq 100",
-        "VTI": "Total Stock Market",
-        "IWM": "Russell 2000 (Small Caps)",
-        "DIA": "Dow Jones 30"
-    },
-    "🇪🇺 Renta Variable Europa": {
-        "VGK": "Europa Total",
-        "FEZ": "Euro Stoxx 50",
-        "EWP": "España (IBEX)",
-        "EWG": "Alemania (DAX)",
-        "EWQ": "Francia (CAC)"
-    },
-    "🌏 Renta Variable Global": {
-        "VT": "Total World",
-        "EEM": "Emergentes",
-        "EFA": "Desarrollados ex-USA",
-        "VWO": "Emergentes (Vanguard)",
-        "IEMG": "Emergentes Core"
-    },
-    "📊 Renta Variable Sectorial": {
-        "XLK": "Tecnología",
-        "XLF": "Financiero",
-        "XLV": "Salud",
-        "XLE": "Energía",
-        "XLI": "Industrial"
-    },
-    "🏦 Renta Fija USA": {
-        "BND": "Bonos Total USA",
-        "AGG": "Aggregate Bond",
-        "TLT": "Bonos Largo Plazo 20+",
-        "IEF": "Bonos Medio Plazo 7-10",
-        "SHY": "Bonos Corto Plazo 1-3"
-    },
-    "🏛️ Renta Fija Corporativa": {
-        "LQD": "Investment Grade",
-        "HYG": "High Yield",
-        "VCIT": "Corporate Intermediate",
-        "VCSH": "Corporate Short-Term",
-        "JNK": "High Yield SPDR"
-    },
-    "🌍 Renta Fija Internacional": {
-        "BNDX": "Bonos Internacionales",
-        "EMB": "Bonos Emergentes",
-        "BWX": "Tesoro Internacional",
-        "IGOV": "Gobiernos Desarrollados",
-        "VWOB": "Bonos Emergentes Gov"
-    },
-    "🥇 Materias Primas": {
-        "GLD": "Oro",
-        "SLV": "Plata",
-        "USO": "Petróleo",
-        "DBA": "Agricultura",
-        "DBC": "Commodities Diversificado"
-    },
-    "🏠 Inmobiliario (REITs)": {
-        "VNQ": "REITs USA",
-        "VNQI": "REITs Internacional",
-        "IYR": "Real Estate USA",
-        "XLRE": "Real Estate Select",
-        "REM": "Mortgage REITs"
-    }
-}
-
-# Bonos de referencia (datos actualizados manualmente o via scraping)
-# En producción se actualizarían con FRED API o scraping del Tesoro
-BONOS_REFERENCIA = {
-    "🇪🇸 España": {
-        "Letra 3 meses": {"ticker": None, "fuente": "Tesoro"},
-        "Letra 6 meses": {"ticker": None, "fuente": "Tesoro"},
-        "Letra 12 meses": {"ticker": None, "fuente": "Tesoro"},
-        "Bono 3 años": {"ticker": None, "fuente": "Tesoro"},
-        "Bono 5 años": {"ticker": None, "fuente": "Tesoro"},
-        "Bono 10 años": {"ticker": None, "fuente": "Tesoro"},
-    },
-    "🇺🇸 USA": {
-        "Treasury 2 años": {"ticker": "^IRX", "fuente": "Yahoo"},
-        "Treasury 5 años": {"ticker": "^FVX", "fuente": "Yahoo"},
-        "Treasury 10 años": {"ticker": "^TNX", "fuente": "Yahoo"},
-        "Treasury 30 años": {"ticker": "^TYX", "fuente": "Yahoo"},
-    },
-    "🇩🇪 Alemania": {
-        "Bund 10 años": {"ticker": None, "fuente": "ECB"},
-    }
-}
-
-# Perfiles de riesgo predefinidos
-PERFILES_RIESGO = {
-    "Conservador": {
-        "descripcion": "Prioriza la preservación del capital. Baja tolerancia al riesgo.",
-        "asignacion": {"Renta Variable": 20, "Renta Fija": 60, "Oro/Commodities": 10, "Liquidez": 10},
-        "etfs_sugeridos": ["SPY", "BND", "AGG", "GLD", "SHY"]
-    },
-    "Moderado": {
-        "descripcion": "Equilibrio entre crecimiento y seguridad. Tolerancia media al riesgo.",
-        "asignacion": {"Renta Variable": 50, "Renta Fija": 35, "Oro/Commodities": 10, "Liquidez": 5},
-        "etfs_sugeridos": ["VTI", "VGK", "BND", "GLD", "LQD"]
-    },
-    "Agresivo": {
-        "descripcion": "Busca máximo crecimiento. Alta tolerancia al riesgo.",
-        "asignacion": {"Renta Variable": 75, "Renta Fija": 15, "Oro/Commodities": 5, "Liquidez": 5},
-        "etfs_sugeridos": ["QQQ", "VTI", "EEM", "TLT", "GLD"]
-    },
-    "Muy Agresivo": {
-        "descripcion": "100% enfocado en crecimiento. Muy alta tolerancia al riesgo.",
-        "asignacion": {"Renta Variable": 90, "Renta Fija": 5, "Oro/Commodities": 5, "Liquidez": 0},
-        "etfs_sugeridos": ["QQQ", "IWM", "EEM", "XLK", "ARKK"]
-    }
-}
-
-
-@st.cache_data(ttl=3600)
-def obtener_rentabilidad_etf(ticker, periodo="1y"):
-    """Obtiene la rentabilidad de un ETF."""
-    try:
-        etf = yf.Ticker(ticker)
-        hist = etf.history(period=periodo)
-        
-        if hist.empty:
-            return None
-        
-        precio_inicio = hist['Close'].iloc[0]
-        precio_fin = hist['Close'].iloc[-1]
-        rentabilidad = (precio_fin - precio_inicio) / precio_inicio * 100
-        
-        # Volatilidad anualizada
-        returns = hist['Close'].pct_change().dropna()
-        volatilidad = returns.std() * np.sqrt(252) * 100
-        
-        # Info adicional
-        info = etf.info
-        
-        return {
-            'ticker': ticker,
-            'nombre': info.get('shortName', ticker),
-            'precio': precio_fin,
-            'rentabilidad': rentabilidad,
-            'volatilidad': volatilidad,
-            'volumen': info.get('averageVolume', 0),
-            'aum': info.get('totalAssets', 0),
-            'expense_ratio': info.get('annualReportExpenseRatio', 0),
-            'categoria': info.get('category', 'N/A')
-        }
-    except Exception as e:
-        return None
-
-
-@st.cache_data(ttl=3600)
-def obtener_tipos_bonos_usa():
-    """Obtiene los tipos de interés de bonos USA desde Yahoo Finance."""
-    bonos = {
-        "Treasury 3 meses": "^IRX",
-        "Treasury 2 años": "^IRX",  # Aproximación
-        "Treasury 5 años": "^FVX",
-        "Treasury 10 años": "^TNX",
-        "Treasury 30 años": "^TYX"
-    }
-    
-    resultados = {}
-    for nombre, ticker in bonos.items():
-        try:
-            data = yf.Ticker(ticker)
-            hist = data.history(period="5d")
-            if not hist.empty:
-                tipo_actual = hist['Close'].iloc[-1]
-                tipo_anterior = hist['Close'].iloc[0] if len(hist) > 1 else tipo_actual
-                cambio = tipo_actual - tipo_anterior
-                resultados[nombre] = {
-                    'tipo': tipo_actual,
-                    'cambio': cambio,
-                    'ticker': ticker
-                }
-        except:
-            pass
-    
-    return resultados
-
-
-@st.cache_data(ttl=86400)
-def obtener_tipos_bonos_espana():
-    """
-    Obtiene tipos de interés de bonos españoles.
-    Nota: En producción, hacer scraping del Tesoro Público.
-    Por ahora usamos datos aproximados/estáticos.
-    """
-    # Datos aproximados (actualizar periódicamente o implementar scraping)
-    # Fuente real: https://www.tesoro.es
-    return {
-        "Letra 3 meses": {"tipo": 3.15, "cambio": -0.05},
-        "Letra 6 meses": {"tipo": 3.05, "cambio": -0.08},
-        "Letra 12 meses": {"tipo": 2.85, "cambio": -0.10},
-        "Bono 3 años": {"tipo": 2.65, "cambio": 0.02},
-        "Bono 5 años": {"tipo": 2.80, "cambio": 0.05},
-        "Bono 10 años": {"tipo": 3.15, "cambio": 0.03},
-        "Obligación 15 años": {"tipo": 3.45, "cambio": 0.02},
-        "Obligación 30 años": {"tipo": 3.75, "cambio": 0.01},
-    }
-
-
-def calcular_cartera_por_perfil(perfil, inversion):
-    """Calcula la distribución de una cartera según el perfil de riesgo."""
-    if perfil not in PERFILES_RIESGO:
-        return None
-    
-    config = PERFILES_RIESGO[perfil]
-    asignacion = config['asignacion']
-    
-    distribucion = {}
-    for categoria, porcentaje in asignacion.items():
-        distribucion[categoria] = {
-            'porcentaje': porcentaje,
-            'importe': inversion * porcentaje / 100
-        }
-    
-    return {
-        'distribucion': distribucion,
-        'etfs_sugeridos': config['etfs_sugeridos'],
-        'descripcion': config['descripcion']
-    }
-
 # --------------------------------------------------
 # CONFIG
 # --------------------------------------------------
@@ -349,7 +121,7 @@ def obtener_info_accion(ticker, periodo="1y"):
             'p_fcf': p_fcf
         }
     except Exception as e:
-        st.warning(f"Error parcial obteniendo datos de {ticker}: {e}")
+        # Silenciar el error en la UI, la función que llama ya maneja si es None
         return None
 
 
@@ -1293,43 +1065,11 @@ def score_regimen_combinado(hmm_result, garch_result):
 # --------------------------------------------------
 st.sidebar.title("⚙️ Parámetros")
 
-# Buscador de tickers
-with st.sidebar.expander("🔎 Buscar ticker por nombre"):
-    busqueda = st.text_input("Nombre de empresa", placeholder="Ej: Inditex, Apple, BBVA...")
-    
-    if busqueda:
-        # Primero buscar en diccionario local
-        resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
-                              if busqueda.lower() in k.lower()]
-        
-        if resultados_locales:
-            st.markdown("**Resultados:**")
-            for nombre, ticker in resultados_locales[:5]:
-                st.code(f"{ticker} → {nombre}")
-        
-        # Buscar en Yahoo Finance
-        resultados_yahoo = buscar_ticker(busqueda)
-        
-        if resultados_yahoo:
-            st.markdown("**Más resultados:**")
-            for r in resultados_yahoo[:5]:
-                if r['ticker'] not in [v for k, v in resultados_locales]:
-                    st.code(f"{r['ticker']} → {r['nombre']} ({r['bolsa']})")
-        
-        if not resultados_locales and not resultados_yahoo:
-            st.warning("No se encontraron resultados")
-    
-    st.caption("💡 España: añade .MC (ej: SAN.MC)")
-    st.caption("💡 Alemania: añade .DE (ej: BMW.DE)")
-    st.caption("💡 Francia: añade .PA (ej: BNP.PA)")
-
-st.sidebar.markdown("---")
-
 # Modo de análisis
 st.sidebar.subheader("🎯 Modo de Análisis")
 modo = st.sidebar.radio(
     "¿Qué quieres analizar?",
-    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "🌍 Análisis por Región", "📈 Comparador de Activos", "📊 Cartera (2+ activos)"],
+    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "🌍 Análisis por Región", "📊 Cartera (2+ activos)"],
     index=0
 )
 
@@ -1373,11 +1113,32 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
         todas_acciones = sorted(list(set(todas_acciones)))
         TICKER_INDIVIDUAL = st.sidebar.selectbox("Selecciona acción", todas_acciones)
     else:
-        TICKER_INDIVIDUAL = st.sidebar.text_input(
-            "Introduce ticker",
-            value="SAN.MC",
-            help="Ejemplo: AAPL, MSFT, SAN.MC"
-        ).strip().upper()
+        busqueda_input = st.sidebar.text_input(
+            "Indica nombre de la empresa o ticker",
+            value="Repsol",
+            help="Ejemplo: Repsol, Apple, SAN.MC"
+        ).strip()
+        
+        TICKER_INDIVIDUAL = ""
+        if busqueda_input:
+            if busqueda_input.upper() in EMPRESAS_COMUNES.values():
+                TICKER_INDIVIDUAL = busqueda_input.upper()
+            else:
+                resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
+                                      if busqueda_input.lower() in k.lower()]
+                if resultados_locales:
+                    TICKER_INDIVIDUAL = resultados_locales[0][1]
+                else:
+                    resultados_yahoo = buscar_ticker(busqueda_input)
+                    if resultados_yahoo:
+                        TICKER_INDIVIDUAL = resultados_yahoo[0]['ticker']
+                    else:
+                        TICKER_INDIVIDUAL = busqueda_input.upper()
+                        st.sidebar.warning(f"No se ha encontrado ninguna empresa llamada '{busqueda_input}'. Usa el '🔎 Buscar ticker por nombre' de arriba para buscar por nombre de la empresa e introduce directamente el ticker.")
+            
+            if TICKER_INDIVIDUAL:
+                st.sidebar.caption(f"Ticker seleccionado: **{TICKER_INDIVIDUAL}**")
+
     TICKERS = [TICKER_INDIVIDUAL] if TICKER_INDIVIDUAL else []
 elif modo == "🌍 Análisis por Región":
     # Selector de regiones
@@ -1394,11 +1155,30 @@ else:
         st.sidebar.write(f"Tickers: {', '.join(TICKERS)}")
     else:
         tickers_input = st.sidebar.text_input(
-            "Introduce tickers (separados por coma)",
-            value="AAPL, MSFT, SAN.MC, NVO",
-            help="Ejemplo: AAPL, MSFT, GOOGL. Para España añade .MC (ej: SAN.MC)"
+            "Indica nombres o tickers (separados por coma)",
+            value="Apple, Microsoft, SAN.MC",
+            help="Ejemplo: Apple, MSFT, Banco Santander"
         )
-        TICKERS = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+        
+        nombres = [t.strip() for t in tickers_input.split(",") if t.strip()]
+        TICKERS = []
+        for nombre in nombres:
+            if nombre.upper() in EMPRESAS_COMUNES.values():
+                TICKERS.append(nombre.upper())
+            else:
+                resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
+                                      if nombre.lower() in k.lower()]
+                if resultados_locales:
+                    TICKERS.append(resultados_locales[0][1])
+                else:
+                    resultados_yahoo = buscar_ticker(nombre)
+                    if resultados_yahoo:
+                        TICKERS.append(resultados_yahoo[0]['ticker'])
+                    else:
+                        TICKERS.append(nombre.upper())
+        
+        if TICKERS:
+            st.sidebar.caption(f"Tickers seleccionados: **{', '.join(TICKERS)}**")
 
 periodo = st.sidebar.selectbox(
     "Período histórico", 
@@ -1428,6 +1208,36 @@ periodo_texto = {
     "5y": "últimos 5 años",
     "10y": "últimos 10 años"
 }.get(periodo, periodo)
+
+# Buscador de tickers
+with st.sidebar.expander("🔎 Buscar ticker por nombre"):
+    busqueda = st.text_input("Nombre de empresa para buscar ticker", placeholder="Ej: Inditex, Apple, BBVA...")
+    
+    if busqueda:
+        # Primero buscar en diccionario local
+        resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
+                              if busqueda.lower() in k.lower()]
+        
+        if resultados_locales:
+            st.markdown("**Resultados:**")
+            for nombre, t in resultados_locales[:5]:
+                st.code(f"{t} → {nombre}")
+        
+        # Buscar en Yahoo Finance
+        resultados_yahoo = buscar_ticker(busqueda)
+        
+        if resultados_yahoo:
+            st.markdown("**Más resultados:**")
+            for r in resultados_yahoo[:5]:
+                if r['ticker'] not in [v for k, v in resultados_locales]:
+                    st.code(f"{r['ticker']} → {r['nombre']} ({r['bolsa']})")
+        
+        if not resultados_locales and not resultados_yahoo:
+            st.warning("No se encontraron resultados")
+    
+    st.caption("💡 España: añade .MC (ej: SAN.MC)")
+    st.caption("💡 Alemania: añade .DE (ej: BMW.DE)")
+    st.caption("💡 Francia: añade .PA (ej: BNP.PA)")
 
 st.sidebar.markdown("---")
 
@@ -1484,29 +1294,12 @@ if modo == "🔍 Acción individual":
     ticker = TICKERS[0]
     ticker_original = ticker
     
-    # Lista de fallback si el ticker principal falla
-    TICKERS_FALLBACK = [ticker, "SAN.MC", "BBVA.MC", "AAPL", "MSFT"]
-    # Eliminar duplicados manteniendo orden
-    TICKERS_FALLBACK = list(dict.fromkeys(TICKERS_FALLBACK))
-    
     try:
         with st.spinner(f"Cargando datos de {ticker}..."):
             data_accion = obtener_info_accion(ticker, periodo)
         
-        # Si no hay datos o el histórico está vacío, probar con fallback
         if data_accion is None or data_accion['history'].empty:
-            st.warning(f"⚠️ No se pudieron cargar datos de {ticker}. Probando alternativas...")
-            
-            for fallback_ticker in TICKERS_FALLBACK[1:]:
-                with st.spinner(f"Probando con {fallback_ticker}..."):
-                    data_accion = obtener_info_accion(fallback_ticker, periodo)
-                    if data_accion and not data_accion['history'].empty:
-                        ticker = fallback_ticker
-                        st.info(f"✅ Mostrando datos de {ticker} como alternativa.")
-                        break
-        
-        if data_accion is None or data_accion['history'].empty:
-            st.error(f"No se pudieron obtener datos. Verifica tu conexión a internet.")
+            st.error(f"No se pudieron cargar datos de '{ticker_original}'. Comprueba que el nombre de empresa o ticker sea correcto.")
             st.stop()
     
     except Exception as e:
@@ -1700,28 +1493,12 @@ elif modo == "🎯 Recomendación compra/venta":
     ticker = TICKERS[0]
     ticker_original = ticker
     
-    # Lista de fallback si el ticker principal falla
-    TICKERS_FALLBACK = [ticker, "SAN.MC", "BBVA.MC", "AAPL", "MSFT"]
-    TICKERS_FALLBACK = list(dict.fromkeys(TICKERS_FALLBACK))
-    
     try:
         with st.spinner(f"Analizando {ticker}..."):
             data_accion = obtener_info_accion(ticker, "1y")
         
-        # Si no hay datos o el histórico está vacío, probar con fallback
         if data_accion is None or data_accion['history'].empty:
-            st.warning(f"⚠️ No se pudieron cargar datos de {ticker}. Probando alternativas...")
-            
-            for fallback_ticker in TICKERS_FALLBACK[1:]:
-                with st.spinner(f"Probando con {fallback_ticker}..."):
-                    data_accion = obtener_info_accion(fallback_ticker, "1y")
-                    if data_accion and not data_accion['history'].empty:
-                        ticker = fallback_ticker
-                        st.info(f"✅ Mostrando análisis de {ticker} como alternativa.")
-                        break
-        
-        if data_accion is None or data_accion['history'].empty:
-            st.error(f"No se pudieron obtener datos. Verifica tu conexión a internet.")
+            st.error(f"No se pudieron cargar datos de '{ticker_original}'. Comprueba que el nombre de empresa o ticker sea correcto.")
             st.stop()
         
         info = data_accion['info']
@@ -2347,471 +2124,6 @@ elif modo == "🌍 Análisis por Región":
         
         plt.tight_layout()
         st.pyplot(fig)
-
-# ==================================================
-# MODO COMPARADOR DE ACTIVOS
-# ==================================================
-elif modo == "📈 Comparador de Activos":
-    st.title("📈 Comparador de Activos")
-    st.markdown("Compara rentabilidades de **ETFs**, **Bonos** y calcula tu cartera ideal según tu perfil de riesgo.")
-    
-    # Tabs principales
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🏦 ETFs por Categoría",
-        "📊 Bonos y Renta Fija", 
-        "⚖️ Calculadora de Cartera",
-        "📉 Comparador Visual"
-    ])
-    
-    # TAB 1: ETFs por Categoría
-    with tab1:
-        st.subheader("🏦 ETFs por Categoría")
-        
-        # Selector de categorías
-        categorias_seleccionadas = st.multiselect(
-            "Selecciona categorías",
-            list(ETFs_POR_CATEGORIA.keys()),
-            default=["📈 Renta Variable USA", "🏦 Renta Fija USA", "🥇 Materias Primas"]
-        )
-        
-        if not categorias_seleccionadas:
-            st.warning("Selecciona al menos una categoría.")
-        else:
-            # Selector de periodo
-            periodo_etf = st.selectbox(
-                "Periodo de rentabilidad",
-                ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
-                index=3,
-                format_func=lambda x: {"1mo": "1 mes", "3mo": "3 meses", "6mo": "6 meses", 
-                                       "1y": "1 año", "2y": "2 años", "5y": "5 años"}[x]
-            )
-            
-            # Obtener datos de ETFs
-            todos_etfs = []
-            
-            progress = st.progress(0)
-            total = sum(len(ETFs_POR_CATEGORIA[cat]) for cat in categorias_seleccionadas)
-            procesados = 0
-            
-            for categoria in categorias_seleccionadas:
-                for ticker, nombre in ETFs_POR_CATEGORIA[categoria].items():
-                    datos = obtener_rentabilidad_etf(ticker, periodo_etf)
-                    if datos:
-                        datos['categoria_grupo'] = categoria
-                        datos['nombre_corto'] = nombre
-                        todos_etfs.append(datos)
-                    procesados += 1
-                    progress.progress(procesados / total)
-            
-            progress.empty()
-            
-            if todos_etfs:
-                # Crear DataFrame
-                df_etfs = pd.DataFrame(todos_etfs)
-                
-                # Ordenar por rentabilidad
-                df_etfs = df_etfs.sort_values('rentabilidad', ascending=False)
-                
-                # Mostrar métricas resumen
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("ETFs Analizados", len(df_etfs))
-                col2.metric("Mejor Rentabilidad", f"{df_etfs['rentabilidad'].max():.1f}%")
-                col3.metric("Peor Rentabilidad", f"{df_etfs['rentabilidad'].min():.1f}%")
-                col4.metric("Rentabilidad Media", f"{df_etfs['rentabilidad'].mean():.1f}%")
-                
-                st.markdown("---")
-                
-                # Top 10 mejores
-                st.markdown("### 🏆 Top 10 Mejores Rentabilidades")
-                top_10 = df_etfs.head(10)
-                
-                top_df = pd.DataFrame({
-                    'Rank': range(1, len(top_10) + 1),
-                    'Ticker': top_10['ticker'],
-                    'Nombre': top_10['nombre_corto'],
-                    'Categoría': [c.split()[0] for c in top_10['categoria_grupo']],
-                    'Rentabilidad': [f"{r:+.1f}%" for r in top_10['rentabilidad']],
-                    'Volatilidad': [f"{v:.1f}%" for v in top_10['volatilidad']],
-                    'Precio': [f"${p:.2f}" for p in top_10['precio']]
-                })
-                st.dataframe(top_df, use_container_width=True, hide_index=True)
-                
-                st.markdown("---")
-                
-                # Por categoría
-                st.markdown("### 📊 Detalle por Categoría")
-                
-                for categoria in categorias_seleccionadas:
-                    etfs_cat = df_etfs[df_etfs['categoria_grupo'] == categoria].copy()
-                    
-                    if not etfs_cat.empty:
-                        with st.expander(f"{categoria} ({len(etfs_cat)} ETFs)", expanded=True):
-                            # Métricas de la categoría
-                            col1, col2, col3 = st.columns(3)
-                            col1.metric("Rent. Media", f"{etfs_cat['rentabilidad'].mean():+.1f}%")
-                            col2.metric("Vol. Media", f"{etfs_cat['volatilidad'].mean():.1f}%")
-                            mejor = etfs_cat.iloc[0]
-                            col3.metric("Mejor", f"{mejor['ticker']} ({mejor['rentabilidad']:+.1f}%)")
-                            
-                            # Tabla
-                            cat_df = pd.DataFrame({
-                                'Ticker': etfs_cat['ticker'],
-                                'Nombre': etfs_cat['nombre_corto'],
-                                'Rentabilidad': [f"{r:+.1f}%" for r in etfs_cat['rentabilidad']],
-                                'Volatilidad': [f"{v:.1f}%" for v in etfs_cat['volatilidad']],
-                                'Precio': [f"${p:.2f}" for p in etfs_cat['precio']]
-                            })
-                            st.dataframe(cat_df, use_container_width=True, hide_index=True)
-                
-                # Gráfico comparativo
-                st.markdown("---")
-                st.markdown("### 📈 Gráfico Comparativo")
-                
-                fig, ax = plt.subplots(figsize=(12, 6))
-                
-                colores = {'📈': 'blue', '🇪🇺': 'green', '🌏': 'orange', '📊': 'purple',
-                          '🏦': 'red', '🏛️': 'brown', '🌍': 'teal', '🥇': 'gold', '🏠': 'pink'}
-                
-                for categoria in categorias_seleccionadas:
-                    etfs_cat = df_etfs[df_etfs['categoria_grupo'] == categoria]
-                    emoji = categoria.split()[0]
-                    color = colores.get(emoji, 'gray')
-                    ax.scatter(etfs_cat['volatilidad'], etfs_cat['rentabilidad'], 
-                              label=categoria, s=100, alpha=0.7, c=color)
-                    
-                    for _, row in etfs_cat.iterrows():
-                        ax.annotate(row['ticker'], (row['volatilidad'], row['rentabilidad']),
-                                   fontsize=8, alpha=0.7)
-                
-                ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-                ax.set_xlabel('Volatilidad (%)')
-                ax.set_ylabel('Rentabilidad (%)')
-                ax.set_title('Rentabilidad vs Volatilidad por Categoría')
-                ax.legend(loc='upper left', fontsize=8)
-                ax.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-    
-    # TAB 2: Bonos y Renta Fija
-    with tab2:
-        st.subheader("📊 Bonos y Renta Fija")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 🇪🇸 Bonos España (Tesoro Público)")
-            
-            bonos_esp = obtener_tipos_bonos_espana()
-            
-            bonos_esp_df = pd.DataFrame([
-                {
-                    'Instrumento': nombre,
-                    'Tipo Interés': f"{datos['tipo']:.2f}%",
-                    'Variación': f"{datos['cambio']:+.2f}%",
-                    'Estado': '🟢' if datos['cambio'] < 0 else '🔴' if datos['cambio'] > 0 else '🟡'
-                }
-                for nombre, datos in bonos_esp.items()
-            ])
-            st.dataframe(bonos_esp_df, use_container_width=True, hide_index=True)
-            
-            st.caption("💡 Tipos bajando = Precios de bonos subiendo")
-            st.caption("📅 Datos orientativos. Consultar Tesoro Público para valores oficiales.")
-        
-        with col2:
-            st.markdown("### 🇺🇸 Bonos USA (Treasury)")
-            
-            with st.spinner("Obteniendo datos de bonos USA..."):
-                bonos_usa = obtener_tipos_bonos_usa()
-            
-            if bonos_usa:
-                bonos_usa_df = pd.DataFrame([
-                    {
-                        'Instrumento': nombre,
-                        'Tipo Interés': f"{datos['tipo']:.2f}%",
-                        'Variación': f"{datos['cambio']:+.2f}%",
-                        'Estado': '🟢' if datos['cambio'] < 0 else '🔴' if datos['cambio'] > 0 else '🟡'
-                    }
-                    for nombre, datos in bonos_usa.items()
-                ])
-                st.dataframe(bonos_usa_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("No se pudieron obtener datos de bonos USA.")
-        
-        st.markdown("---")
-        
-        # Curva de tipos
-        st.markdown("### 📉 Curva de Tipos")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Curva España
-            bonos_esp = obtener_tipos_bonos_espana()
-            plazos_esp = [0.25, 0.5, 1, 3, 5, 10, 15, 30]
-            tipos_esp = [bonos_esp[k]['tipo'] for k in bonos_esp.keys()]
-            
-            fig, ax = plt.subplots(figsize=(8, 4))
-            ax.plot(plazos_esp, tipos_esp, 'b-o', linewidth=2, markersize=8)
-            ax.fill_between(plazos_esp, tipos_esp, alpha=0.3)
-            ax.set_xlabel('Plazo (años)')
-            ax.set_ylabel('Tipo de Interés (%)')
-            ax.set_title('🇪🇸 Curva de Tipos España')
-            ax.grid(True, alpha=0.3)
-            ax.set_xlim(0, 32)
-            plt.tight_layout()
-            st.pyplot(fig)
-        
-        with col2:
-            # Curva USA
-            if bonos_usa:
-                plazos_usa = [0.25, 2, 5, 10, 30]
-                tipos_usa = [bonos_usa[k]['tipo'] for k in bonos_usa.keys()]
-                
-                fig, ax = plt.subplots(figsize=(8, 4))
-                ax.plot(plazos_usa[:len(tipos_usa)], tipos_usa, 'r-o', linewidth=2, markersize=8)
-                ax.fill_between(plazos_usa[:len(tipos_usa)], tipos_usa, alpha=0.3, color='red')
-                ax.set_xlabel('Plazo (años)')
-                ax.set_ylabel('Tipo de Interés (%)')
-                ax.set_title('🇺🇸 Curva de Tipos USA')
-                ax.grid(True, alpha=0.3)
-                ax.set_xlim(0, 32)
-                plt.tight_layout()
-                st.pyplot(fig)
-        
-        # Comparativa ETFs de renta fija
-        st.markdown("---")
-        st.markdown("### 🏦 ETFs de Renta Fija - Rentabilidad")
-        
-        etfs_rf = ["BND", "AGG", "TLT", "LQD", "HYG", "SHY", "IEF"]
-        
-        with st.spinner("Obteniendo datos de ETFs de renta fija..."):
-            datos_rf = []
-            for ticker in etfs_rf:
-                datos = obtener_rentabilidad_etf(ticker, "1y")
-                if datos:
-                    datos_rf.append(datos)
-        
-        if datos_rf:
-            df_rf = pd.DataFrame(datos_rf).sort_values('rentabilidad', ascending=False)
-            
-            fig, ax = plt.subplots(figsize=(10, 5))
-            colors = ['green' if r > 0 else 'red' for r in df_rf['rentabilidad']]
-            bars = ax.barh(df_rf['ticker'], df_rf['rentabilidad'], color=colors)
-            ax.set_xlabel('Rentabilidad 1 año (%)')
-            ax.set_title('Rentabilidad ETFs Renta Fija (1 año)')
-            ax.axvline(x=0, color='black', linewidth=0.5)
-            ax.grid(True, alpha=0.3, axis='x')
-            
-            for bar, rent in zip(bars, df_rf['rentabilidad']):
-                ax.text(rent + 0.2 if rent >= 0 else rent - 0.5, bar.get_y() + bar.get_height()/2,
-                       f'{rent:.1f}%', va='center', fontsize=9)
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-    
-    # TAB 3: Calculadora de Cartera
-    with tab3:
-        st.subheader("⚖️ Calculadora de Cartera por Perfil de Riesgo")
-        
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            st.markdown("### Tu Perfil")
-            
-            perfil = st.radio(
-                "Selecciona tu perfil de riesgo",
-                list(PERFILES_RIESGO.keys()),
-                index=1
-            )
-            
-            inversion = st.number_input(
-                "Inversión total (€)",
-                min_value=1000,
-                max_value=1000000,
-                value=10000,
-                step=1000
-            )
-            
-            st.markdown("---")
-            st.markdown(f"**{perfil}**")
-            st.write(PERFILES_RIESGO[perfil]['descripcion'])
-        
-        with col2:
-            st.markdown("### Distribución Recomendada")
-            
-            cartera = calcular_cartera_por_perfil(perfil, inversion)
-            
-            # Gráfico circular
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-            
-            # Pie chart
-            labels = list(cartera['distribucion'].keys())
-            sizes = [d['porcentaje'] for d in cartera['distribucion'].values()]
-            colors_pie = ['#4CAF50', '#2196F3', '#FF9800', '#9E9E9E']
-            
-            ax1.pie(sizes, labels=labels, autopct='%1.0f%%', colors=colors_pie[:len(labels)],
-                   explode=[0.02] * len(labels))
-            ax1.set_title(f'Distribución - Perfil {perfil}')
-            
-            # Barras con importes
-            importes = [d['importe'] for d in cartera['distribucion'].values()]
-            ax2.barh(labels, importes, color=colors_pie[:len(labels)])
-            ax2.set_xlabel('Importe (€)')
-            ax2.set_title('Distribución por Importe')
-            
-            for i, (label, importe) in enumerate(zip(labels, importes)):
-                ax2.text(importe + 100, i, f'{importe:,.0f}€', va='center')
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-            
-            # Tabla de distribución
-            st.markdown("### 💶 Detalle de Inversión")
-            
-            dist_df = pd.DataFrame([
-                {
-                    'Categoría': cat,
-                    'Porcentaje': f"{datos['porcentaje']}%",
-                    'Importe': f"{datos['importe']:,.2f}€"
-                }
-                for cat, datos in cartera['distribucion'].items()
-            ])
-            st.dataframe(dist_df, use_container_width=True, hide_index=True)
-            
-            # ETFs sugeridos
-            st.markdown("### 💡 ETFs Sugeridos")
-            
-            etfs_sugeridos = cartera['etfs_sugeridos']
-            
-            with st.spinner("Obteniendo datos de ETFs sugeridos..."):
-                datos_sugeridos = []
-                for ticker in etfs_sugeridos:
-                    datos = obtener_rentabilidad_etf(ticker, "1y")
-                    if datos:
-                        datos_sugeridos.append(datos)
-            
-            if datos_sugeridos:
-                sug_df = pd.DataFrame([
-                    {
-                        'Ticker': d['ticker'],
-                        'Nombre': d['nombre'][:30],
-                        'Rent. 1Y': f"{d['rentabilidad']:+.1f}%",
-                        'Volatilidad': f"{d['volatilidad']:.1f}%",
-                        'Precio': f"${d['precio']:.2f}"
-                    }
-                    for d in datos_sugeridos
-                ])
-                st.dataframe(sug_df, use_container_width=True, hide_index=True)
-    
-    # TAB 4: Comparador Visual
-    with tab4:
-        st.subheader("📉 Comparador Visual de Activos")
-        
-        st.markdown("Compara la evolución de hasta 5 activos.")
-        
-        # Selector de activos
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            activos_comparar = st.multiselect(
-                "Selecciona activos para comparar",
-                ["SPY", "QQQ", "VTI", "EEM", "BND", "TLT", "GLD", "VGK", "EWP", "AGG", 
-                 "IWM", "LQD", "HYG", "SLV", "VNQ", "XLK", "XLF", "XLE"],
-                default=["SPY", "BND", "GLD"]
-            )
-        
-        with col2:
-            periodo_comp = st.selectbox(
-                "Periodo",
-                ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
-                index=3,
-                format_func=lambda x: {"1mo": "1 mes", "3mo": "3 meses", "6mo": "6 meses", 
-                                       "1y": "1 año", "2y": "2 años", "5y": "5 años"}[x],
-                key="periodo_comparador"
-            )
-        
-        if len(activos_comparar) < 2:
-            st.warning("Selecciona al menos 2 activos para comparar.")
-        elif len(activos_comparar) > 5:
-            st.warning("Máximo 5 activos para una comparación clara.")
-        else:
-            with st.spinner("Descargando datos..."):
-                # Descargar datos
-                data = yf.download(activos_comparar, period=periodo_comp, progress=False)['Close']
-            
-            if not data.empty:
-                # Normalizar a 100
-                data_norm = data / data.iloc[0] * 100
-                
-                # Gráfico de evolución normalizada
-                st.markdown("### 📈 Evolución Normalizada (Base 100)")
-                
-                fig, ax = plt.subplots(figsize=(12, 6))
-                
-                for ticker in activos_comparar:
-                    if ticker in data_norm.columns:
-                        ax.plot(data_norm.index, data_norm[ticker], linewidth=2, label=ticker)
-                
-                ax.axhline(y=100, color='gray', linestyle='--', alpha=0.5)
-                ax.set_xlabel('Fecha')
-                ax.set_ylabel('Valor (Base 100)')
-                ax.set_title('Comparación de Rentabilidad Normalizada')
-                ax.legend(loc='upper left')
-                ax.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                
-                # Métricas comparativas
-                st.markdown("### 📊 Métricas Comparativas")
-                
-                metricas = []
-                for ticker in activos_comparar:
-                    if ticker in data.columns:
-                        precios = data[ticker].dropna()
-                        rent = (precios.iloc[-1] / precios.iloc[0] - 1) * 100
-                        vol = precios.pct_change().std() * np.sqrt(252) * 100
-                        sharpe = rent / vol if vol > 0 else 0
-                        max_dd = ((precios / precios.cummax()) - 1).min() * 100
-                        
-                        metricas.append({
-                            'Ticker': ticker,
-                            'Rentabilidad': f"{rent:+.1f}%",
-                            'Volatilidad': f"{vol:.1f}%",
-                            'Sharpe': f"{sharpe:.2f}",
-                            'Max Drawdown': f"{max_dd:.1f}%"
-                        })
-                
-                metricas_df = pd.DataFrame(metricas)
-                st.dataframe(metricas_df, use_container_width=True, hide_index=True)
-                
-                # Matriz de correlación
-                st.markdown("### 🔗 Matriz de Correlación")
-                
-                returns = data.pct_change().dropna()
-                corr_matrix = returns.corr()
-                
-                fig, ax = plt.subplots(figsize=(8, 6))
-                im = ax.imshow(corr_matrix, cmap='RdYlGn', vmin=-1, vmax=1)
-                
-                ax.set_xticks(range(len(activos_comparar)))
-                ax.set_yticks(range(len(activos_comparar)))
-                ax.set_xticklabels(activos_comparar)
-                ax.set_yticklabels(activos_comparar)
-                
-                for i in range(len(activos_comparar)):
-                    for j in range(len(activos_comparar)):
-                        ax.text(j, i, f'{corr_matrix.iloc[i, j]:.2f}', 
-                               ha='center', va='center', fontsize=10)
-                
-                plt.colorbar(im, ax=ax, label='Correlación')
-                ax.set_title('Correlación entre Activos')
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                
-                st.caption("💡 Correlación baja o negativa = Mayor diversificación")
 
 # ==================================================
 # MODO CARTERA
