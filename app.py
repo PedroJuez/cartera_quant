@@ -1735,6 +1735,49 @@ def score_tecnico(hist):
     score += pts_vol
     detalles['Volumen/ATR'] = {'valor': texto_vol, 'puntos': pts_vol, 'max': 10, 'estado': estado_vol}
     
+    # 8. BONUS por Tendencia Sostenida (-10 a +10 puntos)
+    # Premia tendencia alcista consistente, penaliza bajista consistente
+    tendencia_diaria_alcista = precio_actual > ma50
+    
+    if tiene_200:
+        tendencia_mensual_calc = calcular_tendencia_mensual(hist).iloc[-1]
+        
+        if tendencia_diaria_alcista and tendencia_mensual_calc == 'alcista':
+            pts_bonus = 10
+            estado_bonus = '🟢'
+            texto_bonus = "Alcista sostenida (diaria + mensual)"
+        elif tendencia_diaria_alcista:
+            pts_bonus = 5
+            estado_bonus = '🟢'
+            texto_bonus = "Alcista diaria"
+        elif not tendencia_diaria_alcista and tendencia_mensual_calc == 'bajista':
+            pts_bonus = -10
+            estado_bonus = '🔴'
+            texto_bonus = "Bajista sostenida (diaria + mensual)"
+        elif not tendencia_diaria_alcista:
+            pts_bonus = -5
+            estado_bonus = '🔴'
+            texto_bonus = "Bajista diaria"
+        else:
+            pts_bonus = 0
+            estado_bonus = '🟡'
+            texto_bonus = "Neutral"
+    else:
+        if tendencia_diaria_alcista:
+            pts_bonus = 5
+            estado_bonus = '🟢'
+            texto_bonus = "Alcista diaria"
+        else:
+            pts_bonus = -5
+            estado_bonus = '🔴'
+            texto_bonus = "Bajista diaria"
+    
+    score += pts_bonus
+    detalles['Bonus Tendencia'] = {'valor': texto_bonus, 'puntos': pts_bonus, 'max': 10, 'estado': estado_bonus}
+    
+    # Asegurar que el score esté entre 0 y 100
+    score = max(0, min(100, score))
+    
     return score, detalles
 
 
@@ -2212,7 +2255,7 @@ REGIONES = {
 
 usar_predefinidos = st.sidebar.checkbox("Usar tickers predefinidos", value=False)
 
-if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/venta":
+if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/venta" or modo == "📊 Señales de Trading":
     if usar_predefinidos:
         todas_acciones = []
         for cat, ticks in tickers_populares.items():
