@@ -2133,26 +2133,42 @@ with st.sidebar.expander("🔎 Buscar ticker por nombre"):
         resultados_locales = [(k, v) for k, v in EMPRESAS_COMUNES.items() 
                               if busqueda.lower() in k.lower()]
         
+        todos_resultados = []
+        
         if resultados_locales:
             st.markdown("**Resultados:**")
             for nombre, ticker in resultados_locales[:5]:
-                st.code(f"{ticker} → {nombre}")
+                todos_resultados.append((ticker, nombre, "Local"))
         
         # Buscar en Yahoo Finance
         resultados_yahoo = buscar_ticker(busqueda)
         
         if resultados_yahoo:
-            st.markdown("**Más resultados:**")
+            if not resultados_locales:
+                st.markdown("**Resultados:**")
             for r in resultados_yahoo[:5]:
-                if r['ticker'] not in [v for k, v in resultados_locales]:
-                    st.code(f"{r['ticker']} → {r['nombre']} ({r['bolsa']})")
+                if r['ticker'] not in [t for t, n, s in todos_resultados]:
+                    todos_resultados.append((r['ticker'], r['nombre'], r['bolsa']))
         
-        if not resultados_locales and not resultados_yahoo:
+        # Mostrar botones seleccionables
+        for ticker, nombre, bolsa in todos_resultados[:8]:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.caption(f"**{ticker}** - {nombre[:20]}{'...' if len(nombre) > 20 else ''}")
+            with col2:
+                if st.button("📋", key=f"copy_{ticker}", help=f"Usar {ticker}"):
+                    st.session_state['ticker_seleccionado'] = ticker
+                    st.rerun()
+        
+        if not todos_resultados:
             st.warning("No se encontraron resultados")
     
-    st.caption("💡 España: añade .MC (ej: SAN.MC)")
-    st.caption("💡 Alemania: añade .DE (ej: BMW.DE)")
-    st.caption("💡 Francia: añade .PA (ej: BNP.PA)")
+    # Mostrar ticker seleccionado
+    if 'ticker_seleccionado' in st.session_state:
+        st.success(f"✅ Seleccionado: **{st.session_state['ticker_seleccionado']}**")
+        st.caption("Cópialo al campo de ticker ↓")
+    
+    st.caption("💡 España: añade .MC | Alemania: .DE | Francia: .PA")
 
 st.sidebar.markdown("---")
 
@@ -2204,11 +2220,16 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
         todas_acciones = sorted(list(set(todas_acciones)))
         TICKER_INDIVIDUAL = st.sidebar.selectbox("Selecciona acción", todas_acciones)
     else:
+        # Usar ticker seleccionado de la búsqueda si existe
+        valor_default = st.session_state.get('ticker_seleccionado', 'SAN.MC')
         TICKER_INDIVIDUAL = st.sidebar.text_input(
             "Introduce ticker",
-            value="SAN.MC",
-            help="Ejemplo: AAPL, MSFT, SAN.MC"
+            value=valor_default,
+            help="Ejemplo: AAPL, MSFT, SAN.MC. Usa la búsqueda ↑ para encontrar tickers."
         ).strip().upper()
+        # Limpiar selección después de usarla
+        if 'ticker_seleccionado' in st.session_state and TICKER_INDIVIDUAL == st.session_state['ticker_seleccionado']:
+            del st.session_state['ticker_seleccionado']
     TICKERS = [TICKER_INDIVIDUAL] if TICKER_INDIVIDUAL else []
 elif modo == "🌍 Análisis por Región":
     # Selector de regiones
@@ -2230,10 +2251,10 @@ elif modo == "🌍 Análisis por Región":
     
     # Ponderaciones según horizonte
     if horizonte_region == "📅 Corto plazo (trading)":
-        peso_fund_region = 0.10
-        peso_tech_region = 0.60
-        peso_reg_region = 0.30
-        st.sidebar.caption("🎯 Téc 60% + Rég 30% + Fund 10%")
+        peso_fund_region = 0.00
+        peso_tech_region = 0.85
+        peso_reg_region = 0.15
+        st.sidebar.caption("🎯 Téc 85% + Rég 15%")
     elif horizonte_region == "📆 Medio plazo (swing)":
         peso_fund_region = 0.30
         peso_tech_region = 0.35
@@ -2303,10 +2324,10 @@ if modo == "🎯 Recomendación compra/venta":
     
     # Ponderaciones según horizonte
     if horizonte == "📅 Corto plazo (trading)":
-        peso_fundamental = 0.10
-        peso_tecnico = 0.60
-        peso_regimen = 0.30
-        st.sidebar.caption("🎯 Téc 60% + Rég 30% + Fund 10%")
+        peso_fundamental = 0.00
+        peso_tecnico = 0.85
+        peso_regimen = 0.15
+        st.sidebar.caption("🎯 Téc 85% + Rég 15%")
     elif horizonte == "📆 Medio plazo (swing)":
         peso_fundamental = 0.30
         peso_tecnico = 0.35
