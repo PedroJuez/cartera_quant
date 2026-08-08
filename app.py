@@ -2256,9 +2256,9 @@ elif modo == "🌍 Análisis por Región":
     # Ponderaciones según horizonte
     if horizonte_region == "📅 Corto plazo (trading)":
         peso_fund_region = 0.00
-        peso_tech_region = 0.85
-        peso_reg_region = 0.15
-        st.sidebar.caption("🎯 Téc 85% + Rég 15%")
+        peso_tech_region = 0.90
+        peso_reg_region = 0.10
+        st.sidebar.caption("🎯 Téc 90% + Rég 10%")
     elif horizonte_region == "📆 Medio plazo (swing)":
         peso_fund_region = 0.30
         peso_tech_region = 0.35
@@ -2329,9 +2329,9 @@ if modo == "🎯 Recomendación compra/venta":
     # Ponderaciones según horizonte
     if horizonte == "📅 Corto plazo (trading)":
         peso_fundamental = 0.00
-        peso_tecnico = 0.85
-        peso_regimen = 0.15
-        st.sidebar.caption("🎯 Téc 85% + Rég 15%")
+        peso_tecnico = 0.90
+        peso_regimen = 0.10
+        st.sidebar.caption("🎯 Téc 90% + Rég 10%")
     elif horizonte == "📆 Medio plazo (swing)":
         peso_fundamental = 0.30
         peso_tecnico = 0.35
@@ -2758,14 +2758,14 @@ elif modo == "🎯 Recomendación compra/venta":
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        # Texto de ponderación según horizonte
-        if peso_tecnico == 0.60:
+        # Texto de ponderación según horizonte seleccionado
+        if horizonte == "📅 Corto plazo (trading)":
             horizonte_texto = "📅 Corto plazo"
-            ponderacion_texto = f"Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}% + Fund {int(peso_fundamental*100)}%"
-        elif peso_tecnico == 0.35:
+            ponderacion_texto = f"Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}%"
+        elif horizonte == "📆 Medio plazo (swing)":
             horizonte_texto = "📆 Medio plazo"
             ponderacion_texto = f"Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}% + Fund {int(peso_fundamental*100)}%"
-        else:
+        else:  # Largo plazo
             horizonte_texto = "📈 Largo plazo"
             ponderacion_texto = f"Fund {int(peso_fundamental*100)}% + Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}%"
         
