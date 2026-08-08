@@ -568,16 +568,53 @@ def efficient_frontier(prices, rf=0.02, n_points=50, max_weight=1.0):
 
 
 # --------------------------------------------------
-# FUNCIONES DE ANÁLISIS TÉCNICO
+# FUNCIONES DE ANÁLISIS TÉCNICO - ESTRATEGIA COMPLETA
 # --------------------------------------------------
-def calcular_rsi(prices, period=14):
-    """Calcula el RSI (Relative Strength Index)."""
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
+
+# Configuración de la estrategia
+ESTRATEGIA_CONFIG = {
+    'rsi_period': 13,
+    'rsi_oversold': 30.0,
+    'rsi_overbought': 70.0,
+    'bb_period': 30,
+    'bb_std': 2.0,
+    'sma_trend': 200,
+    'monthly_lookback': 3,
+    'monthly_min_agree': 2,
+    'wick_body_ratio': 1.5,
+    'close_position': 0.66,
+    'stop_buffer': 0.001,
+    'atr_period': 14,
+    'max_range_atr': 2.5,
+    'min_bandwidth_pct': 20.0,
+    'bandwidth_window': 100,
+    'volume_breakout_mult': 2.0,
+    'breakout_dist_std': 0.5,
+    'risk_per_trade': 0.01,
+    'partial_at_middle': 0.5,
+    'min_rr': 1.5,
+}
+
+
+def rsi_wilder(close: pd.Series, period: int = 13) -> pd.Series:
+    """RSI de Wilder (suavizado exponencial alpha = 1/period) - más preciso que rolling."""
+    delta = close.diff()
+    gain = delta.clip(lower=0.0)
+    loss = (-delta).clip(lower=0.0)
+    
+    avg_gain = gain.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+    
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - 100.0 / (1.0 + rs)
+    rsi = rsi.where(avg_loss != 0, 100.0)
+    rsi = rsi.where(avg_gain != 0, 0.0)
     return rsi
+
+
+def calcular_rsi(prices, period=14):
+    """Wrapper para compatibilidad - usa RSI de Wilder."""
+    return rsi_wilder(prices, period)
 
 
 def calcular_macd(prices, fast=12, slow=26, signal=9):
@@ -588,6 +625,689 @@ def calcular_macd(prices, fast=12, slow=26, signal=9):
     signal_line = macd.ewm(span=signal, adjust=False).mean()
     histogram = macd - signal_line
     return macd, signal_line, histogram
+
+
+def calcular_bollinger_completo(close: pd.Series, period: int = 30, n_std: float = 2.0) -> pd.DataFrame:
+    """Calcula Bandas de Bollinger con métricas adicionales (bandwidth, %B)."""
+    mid = close.rolling(period).mean()
+    sd = close.rolling(period).std(ddof=0)
+    upper = mid + n_std * sd
+    lower = mid - n_std * sd
+    
+    # Bandwidth: ancho de las bandas normalizado
+    bandwidth = (2 * n_std * sd) / mid * 100
+    
+    # %B: posición del precio dentro de las bandas (0 = inferior, 1 = superior)
+    pct_b = (close - lower) / (upper - lower)
+    
+    return pd.DataFrame({
+        'bb_mid': mid,
+        'bb_up': upper,
+        'bb_low': lower,
+        'bb_std': sd,
+        'bb_width': bandwidth,
+        'bb_pct_b': pct_b
+    })
+
+
+def calcular_bollinger_bands(prices, period=30, std_dev=2):
+    """Versión simple para compatibilidad."""
+    bb = calcular_bollinger_completo(prices, period, std_dev)
+    return bb['bb_up'], bb['bb_mid'], bb['bb_low']
+
+
+def calcular_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Calcula ATR (Average True Range) con suavizado de Wilder."""
+    prev_close = df['Close'].shift(1)
+    tr = pd.concat([
+        df['High'] - df['Low'],
+        (df['High'] - prev_close).abs(),
+        (df['Low'] - prev_close).abs()
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
+
+
+def _month_end_freq() -> str:
+    """Compatibilidad pandas <2.2 ('M') y >=2.2 ('ME')."""
+    return "ME" if pd.__version__ >= "2.2" else "M"
+
+
+def calcular_tendencia_mensual(df: pd.DataFrame, lookback: int = 3, min_agree: int = 2) -> pd.Series:
+    """
+    Estructura mensual: máximos y mínimos crecientes/decrecientes.
+    Devuelve serie diaria con {'alcista', 'bajista', 'neutral'}.
+    Solo usa meses YA cerrados (anti-lookahead).
+    """
+    try:
+        m = df.resample(_month_end_freq()).agg({'High': 'max', 'Low': 'min', 'Close': 'last'})
+        
+        hh = (m['High'].diff() > 0).astype(int)
+        hl = (m['Low'].diff() > 0).astype(int)
+        lh = (m['High'].diff() < 0).astype(int)
+        ll = (m['Low'].diff() < 0).astype(int)
+        
+        up = (hh.rolling(lookback).sum() >= min_agree) & (hl.rolling(lookback).sum() >= min_agree)
+        down = (lh.rolling(lookback).sum() >= min_agree) & (ll.rolling(lookback).sum() >= min_agree)
+        
+        struct = pd.Series('neutral', index=m.index, dtype=object)
+        struct[up] = 'alcista'
+        struct[down] = 'bajista'
+        
+        # Solo información del último mes CERRADO
+        struct = struct.shift(1)
+        return struct.reindex(df.index, method='ffill').fillna('neutral')
+    except:
+        return pd.Series('neutral', index=df.index)
+
+
+def calcular_tendencia_completa(df: pd.DataFrame, sma_period: int = 200) -> pd.Series:
+    """
+    Combina estructura mensual + posición vs SMA200.
+    Retorna: 'alcista', 'bajista', 'neutral'
+    """
+    struct = calcular_tendencia_mensual(df)
+    sma = df['Close'].rolling(sma_period).mean()
+    above = df['Close'] > sma
+    below = df['Close'] < sma
+    
+    trend = pd.Series('neutral', index=df.index)
+    
+    # Alcista: estructura mensual alcista O (neutral + precio > SMA)
+    trend[(struct == 'alcista') | ((struct == 'neutral') & above)] = 'alcista'
+    
+    # Bajista: estructura mensual bajista O (neutral + precio < SMA)
+    trend[(struct == 'bajista') | ((struct == 'neutral') & below)] = 'bajista'
+    
+    return trend
+
+
+def detectar_vela_rechazo_avanzado(df: pd.DataFrame, modo: str = 'estricto', 
+                                    wick_ratio: float = 1.5, close_position: float = 0.66):
+    """
+    Detecta velas de rechazo con modos estricto y flexible.
+    
+    Modo estricto: mecha >= body * ratio Y cierre en dirección favorable
+    Modo flexible: cierre en el tercio favorable del rango
+    
+    Retorna: ('alcista', 'bajista', None), detalles
+    """
+    if len(df) < 2:
+        return None, {}
+    
+    row = df.iloc[-1]
+    o, h, l, c = row['Open'], row['High'], row['Low'], row['Close']
+    
+    body = abs(c - o)
+    rango = h - l
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+    
+    if rango < 1e-9:
+        return None, {}
+    
+    detalles = {
+        'open': o, 'high': h, 'low': l, 'close': c,
+        'body': body,
+        'rango': rango,
+        'upper_wick': upper_wick,
+        'lower_wick': lower_wick,
+        'ratio_lower': lower_wick / body if body > 1e-9 else 0,
+        'ratio_upper': upper_wick / body if body > 1e-9 else 0,
+        'modo': modo
+    }
+    
+    if modo == 'estricto':
+        # Martillo alcista: mecha inferior larga + cierre > apertura
+        if lower_wick >= body * wick_ratio and c > o:
+            return 'alcista', detalles
+        
+        # Estrella fugaz bajista: mecha superior larga + cierre < apertura
+        if upper_wick >= body * wick_ratio and c < o:
+            return 'bajista', detalles
+    
+    else:  # modo flexible
+        # Cierre en el tercio superior del rango = rechazo alcista
+        if (c - l) / rango >= close_position:
+            return 'alcista', detalles
+        
+        # Cierre en el tercio inferior del rango = rechazo bajista
+        if (h - c) / rango >= close_position:
+            return 'bajista', detalles
+    
+    return None, detalles
+
+
+def detectar_vela_rechazo(hist_df):
+    """Wrapper para compatibilidad."""
+    return detectar_vela_rechazo_avanzado(hist_df, modo='estricto')
+
+
+def evaluar_filtros_exclusion(df: pd.DataFrame, cfg: dict = None) -> dict:
+    """
+    Evalúa filtros de exclusión para evitar operar en condiciones adversas.
+    Retorna dict con cada filtro y si PASA (True) o FALLA (False).
+    """
+    if cfg is None:
+        cfg = ESTRATEGIA_CONFIG
+    
+    filtros = {
+        'rango_atr': True,
+        'bandwidth': True,
+        'volume_breakout': True,
+        'detalles': {}
+    }
+    
+    if len(df) < cfg['bandwidth_window']:
+        return filtros
+    
+    row = df.iloc[-1]
+    
+    # 1. Filtro de rango extremo (vela > X ATR)
+    atr = calcular_atr(df, cfg['atr_period'])
+    if len(atr) > 0 and not np.isnan(atr.iloc[-1]):
+        rango_vela = row['High'] - row['Low']
+        atr_actual = atr.iloc[-1]
+        ratio_atr = rango_vela / atr_actual if atr_actual > 0 else 0
+        
+        filtros['detalles']['rango_atr'] = f"{ratio_atr:.2f}x ATR"
+        if ratio_atr > cfg['max_range_atr']:
+            filtros['rango_atr'] = False
+    
+    # 2. Filtro de bandwidth (mercado muy estrecho)
+    bb = calcular_bollinger_completo(df['Close'], cfg['bb_period'], cfg['bb_std'])
+    if 'bb_width' in bb.columns:
+        bw = bb['bb_width'].iloc[-1]
+        bw_percentile = (bb['bb_width'].iloc[-cfg['bandwidth_window']:] <= bw).mean() * 100
+        
+        filtros['detalles']['bandwidth'] = f"{bw:.1f}% (percentil {bw_percentile:.0f})"
+        if bw_percentile < cfg['min_bandwidth_pct']:
+            filtros['bandwidth'] = False
+    
+    # 3. Filtro de breakout con volumen (ruptura fuerte = no mean reversion)
+    if 'Volume' in df.columns:
+        vol = df['Volume']
+        vol_ma = vol.rolling(20).mean().iloc[-1]
+        vol_actual = row['Volume']
+        vol_ratio = vol_actual / vol_ma if vol_ma > 0 else 1
+        
+        # Detectar si es un breakout (cierre muy lejos de banda)
+        if 'bb_std' in bb.columns:
+            dist_upper = (row['Close'] - bb['bb_up'].iloc[-1]) / bb['bb_std'].iloc[-1] if bb['bb_std'].iloc[-1] > 0 else 0
+            dist_lower = (bb['bb_low'].iloc[-1] - row['Close']) / bb['bb_std'].iloc[-1] if bb['bb_std'].iloc[-1] > 0 else 0
+            
+            filtros['detalles']['volumen'] = f"{vol_ratio:.1f}x media"
+            
+            # Breakout con volumen = no operar mean reversion
+            if vol_ratio > cfg['volume_breakout_mult']:
+                if dist_upper > cfg['breakout_dist_std'] or dist_lower > cfg['breakout_dist_std']:
+                    filtros['volume_breakout'] = False
+    
+    return filtros
+
+
+def calcular_position_sizing(capital: float, entry: float, stop: float, 
+                             risk_pct: float = 0.01, max_position_pct: float = 1.0) -> dict:
+    """
+    Calcula el tamaño de posición basado en riesgo fijo (1% por defecto).
+    """
+    risk_per_unit = abs(entry - stop)
+    if risk_per_unit < 1e-9:
+        return {'qty': 0, 'risk_cash': 0, 'position_value': 0}
+    
+    risk_cash = capital * risk_pct
+    qty = risk_cash / risk_per_unit
+    position_value = qty * entry
+    
+    # Limitar a max_position_pct del capital
+    max_position = capital * max_position_pct
+    if position_value > max_position:
+        qty = max_position / entry
+        position_value = qty * entry
+        risk_cash = qty * risk_per_unit
+    
+    return {
+        'qty': qty,
+        'risk_cash': risk_cash,
+        'position_value': position_value,
+        'risk_per_unit': risk_per_unit,
+        'pct_capital': position_value / capital * 100 if capital > 0 else 0
+    }
+
+
+def analizar_retorno_media_completo(df: pd.DataFrame, cfg: dict = None, capital: float = 100000) -> dict:
+    """
+    Análisis completo de la estrategia de Retorno a la Media.
+    Incluye todos los filtros, tendencia mensual, y gestión monetaria.
+    """
+    if cfg is None:
+        cfg = ESTRATEGIA_CONFIG
+    
+    resultado = {
+        'señal': None,
+        'fuerza': 0,
+        'condiciones': [],
+        'filtros_ok': True,
+        'detalles': {},
+        'position_sizing': {},
+        'niveles': {}
+    }
+    
+    min_bars = max(cfg['bb_period'], cfg['sma_trend'], cfg['bandwidth_window'])
+    if len(df) < min_bars:
+        resultado['condiciones'].append(f"Datos insuficientes ({len(df)}/{min_bars} barras)")
+        return resultado
+    
+    close = df['Close']
+    row = df.iloc[-1]
+    precio = row['Close']
+    
+    # --- Calcular indicadores ---
+    rsi = rsi_wilder(close, cfg['rsi_period'])
+    bb = calcular_bollinger_completo(close, cfg['bb_period'], cfg['bb_std'])
+    tendencia = calcular_tendencia_completa(df, cfg['sma_trend'])
+    atr = calcular_atr(df, cfg['atr_period'])
+    
+    rsi_actual = rsi.iloc[-1]
+    bb_upper = bb['bb_up'].iloc[-1]
+    bb_mid = bb['bb_mid'].iloc[-1]
+    bb_lower = bb['bb_low'].iloc[-1]
+    bb_pct_b = bb['bb_pct_b'].iloc[-1]
+    bb_width = bb['bb_width'].iloc[-1]
+    tendencia_actual = tendencia.iloc[-1]
+    atr_actual = atr.iloc[-1] if len(atr) > 0 else 0
+    
+    # --- Detectar vela de rechazo ---
+    tipo_rechazo, det_rechazo = detectar_vela_rechazo_avanzado(df, 'estricto', cfg['wick_body_ratio'])
+    
+    # --- Evaluar filtros de exclusión ---
+    filtros = evaluar_filtros_exclusion(df, cfg)
+    filtros_ok = all([filtros['rango_atr'], filtros['bandwidth'], filtros['volume_breakout']])
+    
+    resultado['detalles'] = {
+        'precio': precio,
+        'rsi': rsi_actual,
+        'bb_upper': bb_upper,
+        'bb_mid': bb_mid,
+        'bb_lower': bb_lower,
+        'bb_pct_b': bb_pct_b * 100,  # Como porcentaje
+        'bb_width': bb_width,
+        'tendencia': tendencia_actual,
+        'tendencia_mensual': calcular_tendencia_mensual(df).iloc[-1],
+        'sma200': close.rolling(cfg['sma_trend']).mean().iloc[-1],
+        'atr': atr_actual,
+        'tipo_rechazo': tipo_rechazo,
+        'filtros': filtros
+    }
+    
+    resultado['filtros_ok'] = filtros_ok
+    
+    # --- Evaluar condiciones LONG ---
+    cond_long = []
+    pts_long = 0
+    
+    # 1. Precio toca/cruza banda inferior
+    if precio <= bb_lower:
+        cond_long.append("✅ Precio en/bajo banda inferior")
+        pts_long += 25
+    elif precio <= bb_lower * 1.02:
+        cond_long.append("⚠️ Precio cerca de banda inferior (<2%)")
+        pts_long += 10
+    
+    # 2. RSI en sobreventa
+    if rsi_actual <= cfg['rsi_oversold']:
+        cond_long.append(f"✅ RSI en sobreventa ({rsi_actual:.1f} ≤ 30)")
+        pts_long += 25
+    elif rsi_actual <= cfg['rsi_oversold'] + 5:
+        cond_long.append(f"⚠️ RSI cerca de sobreventa ({rsi_actual:.1f})")
+        pts_long += 10
+    
+    # 3. Vela de rechazo alcista
+    if tipo_rechazo == 'alcista':
+        cond_long.append("✅ Vela de rechazo alcista (martillo)")
+        pts_long += 25
+    
+    # 4. Tendencia no bajista
+    if tendencia_actual != 'bajista':
+        cond_long.append(f"✅ Tendencia {tendencia_actual} (no bajista)")
+        pts_long += 25
+    else:
+        cond_long.append(f"❌ Tendencia bajista (contra-tendencia)")
+        pts_long -= 10
+    
+    # --- Evaluar condiciones SHORT ---
+    cond_short = []
+    pts_short = 0
+    
+    # 1. Precio toca/cruza banda superior
+    if precio >= bb_upper:
+        cond_short.append("✅ Precio en/sobre banda superior")
+        pts_short += 25
+    elif precio >= bb_upper * 0.98:
+        cond_short.append("⚠️ Precio cerca de banda superior (<2%)")
+        pts_short += 10
+    
+    # 2. RSI en sobrecompra
+    if rsi_actual >= cfg['rsi_overbought']:
+        cond_short.append(f"✅ RSI en sobrecompra ({rsi_actual:.1f} ≥ 70)")
+        pts_short += 25
+    elif rsi_actual >= cfg['rsi_overbought'] - 5:
+        cond_short.append(f"⚠️ RSI cerca de sobrecompra ({rsi_actual:.1f})")
+        pts_short += 10
+    
+    # 3. Vela de rechazo bajista
+    if tipo_rechazo == 'bajista':
+        cond_short.append("✅ Vela de rechazo bajista (estrella fugaz)")
+        pts_short += 25
+    
+    # 4. Tendencia no alcista
+    if tendencia_actual != 'alcista':
+        cond_short.append(f"✅ Tendencia {tendencia_actual} (no alcista)")
+        pts_short += 25
+    else:
+        cond_short.append(f"❌ Tendencia alcista (contra-tendencia)")
+        pts_short -= 10
+    
+    # --- Determinar señal ---
+    señal = None
+    fuerza = 0
+    condiciones = []
+    
+    if pts_long >= 75 and filtros_ok:
+        señal = 'LONG'
+        fuerza = pts_long
+        condiciones = cond_long
+    elif pts_short >= 75 and filtros_ok:
+        señal = 'SHORT'
+        fuerza = pts_short
+        condiciones = cond_short
+    elif pts_long >= 50 and filtros_ok:
+        señal = 'VIGILAR_LONG'
+        fuerza = pts_long
+        condiciones = cond_long
+    elif pts_short >= 50 and filtros_ok:
+        señal = 'VIGILAR_SHORT'
+        fuerza = pts_short
+        condiciones = cond_short
+    elif not filtros_ok:
+        señal = 'FILTRO_ACTIVO'
+        fuerza = 0
+        condiciones = [f"❌ Filtro: {k}" for k, v in filtros.items() if k != 'detalles' and not v]
+    else:
+        señal = 'NEUTRAL'
+        fuerza = max(pts_long, pts_short)
+        condiciones = cond_long if pts_long > pts_short else cond_short
+    
+    resultado['señal'] = señal
+    resultado['fuerza'] = fuerza
+    resultado['condiciones'] = condiciones
+    
+    # --- Calcular niveles de trading ---
+    if señal in ['LONG', 'VIGILAR_LONG']:
+        stop = row['Low'] * (1 - cfg['stop_buffer'])
+        objetivo1 = bb_mid  # Salida parcial
+        objetivo2 = bb_upper  # Objetivo extendido
+        
+        rr1 = (objetivo1 - precio) / (precio - stop) if (precio - stop) > 0 else 0
+        rr2 = (objetivo2 - precio) / (precio - stop) if (precio - stop) > 0 else 0
+        
+        resultado['niveles'] = {
+            'entrada': precio,
+            'stop': stop,
+            'objetivo_parcial': objetivo1,
+            'objetivo_extendido': objetivo2,
+            'riesgo': precio - stop,
+            'beneficio_parcial': objetivo1 - precio,
+            'beneficio_extendido': objetivo2 - precio,
+            'rr_parcial': rr1,
+            'rr_extendido': rr2,
+            'pasa_min_rr': rr1 >= cfg['min_rr']
+        }
+        
+        # Position sizing
+        resultado['position_sizing'] = calcular_position_sizing(capital, precio, stop, cfg['risk_per_trade'])
+        
+    elif señal in ['SHORT', 'VIGILAR_SHORT']:
+        stop = row['High'] * (1 + cfg['stop_buffer'])
+        objetivo1 = bb_mid
+        objetivo2 = bb_lower
+        
+        rr1 = (precio - objetivo1) / (stop - precio) if (stop - precio) > 0 else 0
+        rr2 = (precio - objetivo2) / (stop - precio) if (stop - precio) > 0 else 0
+        
+        resultado['niveles'] = {
+            'entrada': precio,
+            'stop': stop,
+            'objetivo_parcial': objetivo1,
+            'objetivo_extendido': objetivo2,
+            'riesgo': stop - precio,
+            'beneficio_parcial': precio - objetivo1,
+            'beneficio_extendido': precio - objetivo2,
+            'rr_parcial': rr1,
+            'rr_extendido': rr2,
+            'pasa_min_rr': rr1 >= cfg['min_rr']
+        }
+        
+        resultado['position_sizing'] = calcular_position_sizing(capital, precio, stop, cfg['risk_per_trade'])
+    
+    return resultado
+
+
+def analizar_retorno_media(hist_df, rsi_period=13, bb_period=30, bb_std=2):
+    """Wrapper para compatibilidad con código existente."""
+    resultado = analizar_retorno_media_completo(hist_df)
+    
+    # Convertir al formato anterior
+    señal = resultado['señal']
+    detalles = resultado['detalles'].copy()
+    detalles['señal'] = señal
+    detalles['razon'] = resultado['condiciones']
+    
+    if resultado['niveles']:
+        detalles['objetivo'] = resultado['niveles'].get('objetivo_parcial')
+        detalles['stop'] = resultado['niveles'].get('stop')
+        detalles['riesgo_beneficio'] = resultado['niveles'].get('rr_parcial', 0)
+    
+    # Añadir campos que espera el código existente
+    detalles['bb_position'] = detalles.get('bb_pct_b', 50)
+    detalles['tipo_rechazo'] = detalles.get('tipo_rechazo')
+    detalles['tendencia'] = detalles.get('tendencia', 'neutral')
+    
+    return señal, detalles
+
+
+def score_tecnico_mejorado(hist_df):
+    """
+    Score técnico mejorado con Bandas de Bollinger y estrategia de Retorno a la Media.
+    Escala: 0-100 (0 = muy bajista, 50 = neutral, 100 = muy alcista)
+    """
+    score = 0
+    detalles = {}
+    
+    if len(hist_df) < 200:
+        return 50, {'error': 'Datos insuficientes'}
+    
+    close = hist_df['Close']
+    volume = hist_df['Volume'] if 'Volume' in hist_df.columns else None
+    
+    # 1. Precio vs MA50 y MA200 (0-20 puntos)
+    ma50 = close.rolling(window=50).mean().iloc[-1]
+    ma200 = close.rolling(window=200).mean().iloc[-1]
+    precio_actual = close.iloc[-1]
+    
+    pts_ma = 0
+    if precio_actual > ma50:
+        pts_ma += 7
+    if precio_actual > ma200:
+        pts_ma += 8
+    if ma50 > ma200:  # Golden Cross
+        pts_ma += 5
+    
+    score += pts_ma
+    detalles['Tendencia MA'] = {
+        'valor': f"{'↑' if precio_actual > ma200 else '↓'} P:{precio_actual:.2f} MA50:{ma50:.2f} MA200:{ma200:.2f}",
+        'puntos': pts_ma,
+        'max': 20,
+        'estado': '🟢' if pts_ma >= 15 else '🟡' if pts_ma >= 10 else '🔴'
+    }
+    
+    # 2. RSI(13) - Estrategia Retorno a Media (0-20 puntos)
+    rsi = calcular_rsi(close, period=13).iloc[-1]
+    
+    if rsi <= 30:
+        pts_rsi = 20  # Sobreventa = oportunidad de compra
+        estado_rsi = '🟢'
+        texto_rsi = f"{rsi:.1f} (Sobreventa - COMPRA)"
+    elif rsi >= 70:
+        pts_rsi = 0  # Sobrecompra = evitar compra
+        estado_rsi = '🔴'
+        texto_rsi = f"{rsi:.1f} (Sobrecompra - VENTA)"
+    elif 30 < rsi <= 45:
+        pts_rsi = 15
+        estado_rsi = '🟢'
+        texto_rsi = f"{rsi:.1f} (Zona baja)"
+    elif 55 <= rsi < 70:
+        pts_rsi = 5
+        estado_rsi = '🟡'
+        texto_rsi = f"{rsi:.1f} (Zona alta)"
+    else:
+        pts_rsi = 10
+        estado_rsi = '🟡'
+        texto_rsi = f"{rsi:.1f} (Neutral)"
+    
+    score += pts_rsi
+    detalles['RSI(13)'] = {
+        'valor': texto_rsi,
+        'puntos': pts_rsi,
+        'max': 20,
+        'estado': estado_rsi
+    }
+    
+    # 3. Bandas de Bollinger(30) (0-20 puntos)
+    bb_upper, bb_middle, bb_lower = calcular_bollinger_bands(close, period=30, std_dev=2)
+    bb_pos = (precio_actual - bb_lower.iloc[-1]) / (bb_upper.iloc[-1] - bb_lower.iloc[-1]) * 100
+    
+    if bb_pos <= 10:
+        pts_bb = 20  # Muy cerca de banda inferior = oportunidad
+        estado_bb = '🟢'
+        texto_bb = f"Pos: {bb_pos:.0f}% (Banda inferior)"
+    elif bb_pos >= 90:
+        pts_bb = 0  # Muy cerca de banda superior = peligro
+        estado_bb = '🔴'
+        texto_bb = f"Pos: {bb_pos:.0f}% (Banda superior)"
+    elif bb_pos <= 30:
+        pts_bb = 15
+        estado_bb = '🟢'
+        texto_bb = f"Pos: {bb_pos:.0f}% (Zona baja)"
+    elif bb_pos >= 70:
+        pts_bb = 5
+        estado_bb = '🟡'
+        texto_bb = f"Pos: {bb_pos:.0f}% (Zona alta)"
+    else:
+        pts_bb = 10
+        estado_bb = '🟡'
+        texto_bb = f"Pos: {bb_pos:.0f}% (Centro)"
+    
+    score += pts_bb
+    detalles['Bollinger(30)'] = {
+        'valor': texto_bb,
+        'puntos': pts_bb,
+        'max': 20,
+        'estado': estado_bb
+    }
+    
+    # 4. Vela de Rechazo (0-15 puntos)
+    tipo_rechazo, det_rechazo = detectar_vela_rechazo(hist_df)
+    
+    if tipo_rechazo == 'alcista':
+        pts_rechazo = 15
+        estado_rechazo = '🟢'
+        texto_rechazo = "Martillo alcista detectado"
+    elif tipo_rechazo == 'bajista':
+        pts_rechazo = 0
+        estado_rechazo = '🔴'
+        texto_rechazo = "Estrella fugaz bajista"
+    else:
+        pts_rechazo = 7
+        estado_rechazo = '🟡'
+        texto_rechazo = "Sin patrón de rechazo"
+    
+    score += pts_rechazo
+    detalles['Vela Rechazo'] = {
+        'valor': texto_rechazo,
+        'puntos': pts_rechazo,
+        'max': 15,
+        'estado': estado_rechazo
+    }
+    
+    # 5. MACD (0-15 puntos)
+    macd, signal_line, histogram = calcular_macd(close)
+    macd_actual = macd.iloc[-1]
+    signal_actual = signal_line.iloc[-1]
+    hist_actual = histogram.iloc[-1]
+    hist_anterior = histogram.iloc[-2]
+    
+    if macd_actual > signal_actual and hist_actual > hist_anterior:
+        pts_macd = 15
+        estado_macd = '🟢'
+        texto_macd = "MACD alcista + momentum"
+    elif macd_actual > signal_actual:
+        pts_macd = 12
+        estado_macd = '🟢'
+        texto_macd = "MACD alcista"
+    elif macd_actual < signal_actual and hist_actual < hist_anterior:
+        pts_macd = 0
+        estado_macd = '🔴'
+        texto_macd = "MACD bajista + momentum"
+    elif macd_actual < signal_actual:
+        pts_macd = 3
+        estado_macd = '🔴'
+        texto_macd = "MACD bajista"
+    else:
+        pts_macd = 7
+        estado_macd = '🟡'
+        texto_macd = "MACD neutral"
+    
+    score += pts_macd
+    detalles['MACD'] = {
+        'valor': texto_macd,
+        'puntos': pts_macd,
+        'max': 15,
+        'estado': estado_macd
+    }
+    
+    # 6. Volumen (0-10 puntos)
+    if volume is not None and len(volume) >= 20:
+        vol_ma = volume.rolling(window=20).mean().iloc[-1]
+        vol_actual = volume.iloc[-5:].mean()
+        vol_ratio = vol_actual / vol_ma if vol_ma > 0 else 1
+        
+        # Volumen creciente en tendencia alcista es positivo
+        if vol_ratio > 1.2 and precio_actual > ma50:
+            pts_vol = 10
+            estado_vol = '🟢'
+            texto_vol = f"Alto ({vol_ratio:.1f}x) + tendencia ↑"
+        elif vol_ratio > 1.0:
+            pts_vol = 7
+            estado_vol = '🟡'
+            texto_vol = f"Normal ({vol_ratio:.1f}x)"
+        else:
+            pts_vol = 5
+            estado_vol = '🟡'
+            texto_vol = f"Bajo ({vol_ratio:.1f}x)"
+    else:
+        pts_vol = 5
+        estado_vol = '⚪'
+        texto_vol = "N/A"
+    
+    score += pts_vol
+    detalles['Volumen'] = {
+        'valor': texto_vol,
+        'puntos': pts_vol,
+        'max': 10,
+        'estado': estado_vol
+    }
+    
+    return score, detalles
 
 
 def calcular_soportes_resistencias(prices, window=20):
@@ -768,7 +1488,11 @@ def score_fundamental(info):
 
 
 def score_tecnico(hist):
-    """Calcula el score técnico (0-100)."""
+    """
+    Calcula el score técnico (0-100) con estrategia de Retorno a la Media COMPLETA.
+    Incorpora: RSI Wilder(13), Bandas de Bollinger(30), Velas de Rechazo, 
+    Tendencia Mensual, Filtros de Exclusión, MACD, MAs.
+    """
     score = 0
     detalles = {}
     
@@ -778,131 +1502,238 @@ def score_tecnico(hist):
     close = hist['Close']
     precio_actual = close.iloc[-1]
     
-    # MA50 (0-15 puntos)
-    ma50 = close.rolling(window=50).mean().iloc[-1]
-    if precio_actual > ma50:
-        pts = 15
-        estado = '🟢'
-        texto = f"Precio > MA50 ({ma50:.2f})"
-    else:
-        pts = 0
-        estado = '🔴'
-        texto = f"Precio < MA50 ({ma50:.2f})"
-    score += pts
-    detalles['Precio vs MA50'] = {'valor': texto, 'puntos': pts, 'max': 15, 'estado': estado}
+    # Verificar si tenemos suficientes datos para todos los indicadores
+    tiene_200 = len(close) >= 200
+    tiene_100 = len(close) >= 100
     
-    # MA200 (0-15 puntos)
-    if len(close) >= 200:
+    # 1. Precio vs MA50 y MA200 (0-15 puntos)
+    ma50 = close.rolling(window=50).mean().iloc[-1]
+    
+    if tiene_200:
         ma200 = close.rolling(window=200).mean().iloc[-1]
-        if precio_actual > ma200:
+        if precio_actual > ma200 and precio_actual > ma50:
             pts = 15
             estado = '🟢'
-            texto = f"Precio > MA200 ({ma200:.2f})"
+            texto = f"Precio > MA50 ({ma50:.2f}) y MA200 ({ma200:.2f})"
+        elif precio_actual > ma50:
+            pts = 10
+            estado = '🟡'
+            texto = f"Precio > MA50 ({ma50:.2f})"
         else:
             pts = 0
             estado = '🔴'
-            texto = f"Precio < MA200 ({ma200:.2f})"
-        score += pts
-        detalles['Precio vs MA200'] = {'valor': texto, 'puntos': pts, 'max': 15, 'estado': estado}
+            texto = f"Precio < MA50 ({ma50:.2f})"
     else:
-        detalles['Precio vs MA200'] = {'valor': 'N/A (datos insuf.)', 'puntos': 0, 'max': 15, 'estado': '⚪'}
+        if precio_actual > ma50:
+            pts = 10
+            estado = '🟢'
+            texto = f"Precio > MA50 ({ma50:.2f})"
+        else:
+            pts = 0
+            estado = '🔴'
+            texto = f"Precio < MA50 ({ma50:.2f})"
     
-    # Golden/Death Cross (0-20 puntos)
-    if len(close) >= 200:
+    score += pts
+    detalles['Tendencia MAs'] = {'valor': texto, 'puntos': pts, 'max': 15, 'estado': estado}
+    
+    # 2. Tendencia Mensual + Golden/Death Cross (0-15 puntos)
+    if tiene_200:
+        # Estructura mensual
+        tendencia_mensual = calcular_tendencia_mensual(hist).iloc[-1]
         ma50_series = close.rolling(window=50).mean()
         ma200_series = close.rolling(window=200).mean()
-        
         golden_cross = ma50_series.iloc[-1] > ma200_series.iloc[-1]
         
-        # Detectar si el cruce es reciente (últimas 20 sesiones)
-        cruce_reciente = False
-        for i in range(-20, -1):
-            if len(ma50_series) > abs(i) and len(ma200_series) > abs(i):
-                if ma50_series.iloc[i-1] <= ma200_series.iloc[i-1] and ma50_series.iloc[i] > ma200_series.iloc[i]:
-                    cruce_reciente = True
-                    break
-        
-        if golden_cross:
-            pts = 20 if cruce_reciente else 15
+        if tendencia_mensual == 'alcista' and golden_cross:
+            pts = 15
             estado = '🟢'
-            texto = "Golden Cross" + (" (reciente!)" if cruce_reciente else "")
-        else:
+            texto = f"Mensual alcista + Golden Cross"
+        elif tendencia_mensual == 'alcista' or golden_cross:
+            pts = 10
+            estado = '🟢'
+            texto = f"Mensual: {tendencia_mensual} | {'Golden' if golden_cross else 'Death'} Cross"
+        elif tendencia_mensual == 'bajista' and not golden_cross:
             pts = 0
             estado = '🔴'
-            texto = "Death Cross"
+            texto = f"Mensual bajista + Death Cross"
+        else:
+            pts = 5
+            estado = '🟡'
+            texto = f"Mensual: {tendencia_mensual}"
+        
         score += pts
-        detalles['Cruce de Medias'] = {'valor': texto, 'puntos': pts, 'max': 20, 'estado': estado}
+        detalles['Tendencia/Cruce'] = {'valor': texto, 'puntos': pts, 'max': 15, 'estado': estado}
     else:
-        detalles['Cruce de Medias'] = {'valor': 'N/A', 'puntos': 0, 'max': 20, 'estado': '⚪'}
+        score += 7
+        detalles['Tendencia/Cruce'] = {'valor': 'N/A (< 200 días)', 'puntos': 7, 'max': 15, 'estado': '⚪'}
     
-    # RSI (0-20 puntos)
-    rsi = calcular_rsi(close).iloc[-1]
-    if 30 <= rsi <= 50:  # Recuperando de sobreventa
-        pts = 20
+    # 3. RSI Wilder(13) - Estrategia Retorno a Media (0-20 puntos)
+    rsi = rsi_wilder(close, period=13).iloc[-1]
+    
+    if rsi <= 30:
+        pts = 20  # Sobreventa = oportunidad de compra
         estado = '🟢'
-        texto = f"{rsi:.1f} (recuperando)"
-    elif 50 < rsi <= 70:  # Zona neutral-alcista
+        texto = f"{rsi:.1f} (Sobreventa - OPORTUNIDAD)"
+    elif rsi >= 70:
+        pts = 0  # Sobrecompra = peligro
+        estado = '🔴'
+        texto = f"{rsi:.1f} (Sobrecompra - PRECAUCIÓN)"
+    elif 30 < rsi <= 45:
         pts = 15
         estado = '🟢'
-        texto = f"{rsi:.1f} (alcista)"
-    elif rsi < 30:  # Sobrevendido
+        texto = f"{rsi:.1f} (Zona favorable)"
+    elif 55 <= rsi < 70:
+        pts = 5
+        estado = '🟡'
+        texto = f"{rsi:.1f} (Zona alta)"
+    else:
         pts = 10
         estado = '🟡'
-        texto = f"{rsi:.1f} (sobrevendido)"
-    else:  # >70 Sobrecomprado
+        texto = f"{rsi:.1f} (Neutral)"
+    
+    score += pts
+    detalles['RSI Wilder(13)'] = {'valor': texto, 'puntos': pts, 'max': 20, 'estado': estado}
+    
+    # 4. Bandas de Bollinger(30) con Bandwidth (0-20 puntos)
+    if len(close) >= 30:
+        bb = calcular_bollinger_completo(close, period=30, n_std=2)
+        bb_u = bb['bb_up'].iloc[-1]
+        bb_l = bb['bb_low'].iloc[-1]
+        bb_pos = bb['bb_pct_b'].iloc[-1] * 100
+        bb_width = bb['bb_width'].iloc[-1]
+        
+        # Evaluar posición
+        if bb_pos <= 10:
+            pts = 20
+            estado = '🟢'
+            texto = f"%B: {bb_pos:.0f}% (Banda inf. - COMPRA)"
+        elif bb_pos >= 90:
+            pts = 0
+            estado = '🔴'
+            texto = f"%B: {bb_pos:.0f}% (Banda sup. - VENTA)"
+        elif bb_pos <= 30:
+            pts = 15
+            estado = '🟢'
+            texto = f"%B: {bb_pos:.0f}% (Zona baja)"
+        elif bb_pos >= 70:
+            pts = 5
+            estado = '🟡'
+            texto = f"%B: {bb_pos:.0f}% (Zona alta)"
+        else:
+            pts = 10
+            estado = '🟡'
+            texto = f"%B: {bb_pos:.0f}% (Centro)"
+        
+        # Penalizar si bandwidth muy estrecho (mercado sin volatilidad)
+        if tiene_100:
+            bw_percentile = (bb['bb_width'].iloc[-100:] <= bb_width).mean() * 100
+            if bw_percentile < 20:
+                pts = max(0, pts - 5)
+                texto += f" | BW bajo ({bw_percentile:.0f}%ile)"
+        
+        score += pts
+        detalles['Bollinger(30)'] = {'valor': texto, 'puntos': pts, 'max': 20, 'estado': estado}
+    else:
+        score += 10
+        detalles['Bollinger(30)'] = {'valor': 'N/A', 'puntos': 10, 'max': 20, 'estado': '⚪'}
+    
+    # 5. Vela de Rechazo (0-10 puntos)
+    tipo_rechazo, det_rechazo = detectar_vela_rechazo_avanzado(hist, 'estricto')
+    
+    if tipo_rechazo == 'alcista':
+        pts = 10
+        estado = '🟢'
+        texto = "Martillo alcista ↑"
+    elif tipo_rechazo == 'bajista':
         pts = 0
         estado = '🔴'
-        texto = f"{rsi:.1f} (sobrecomprado)"
-    score += pts
-    detalles['RSI'] = {'valor': texto, 'puntos': pts, 'max': 20, 'estado': estado}
+        texto = "Estrella fugaz ↓"
+    else:
+        pts = 5
+        estado = '🟡'
+        texto = "Sin patrón"
     
-    # MACD (0-20 puntos)
-    macd, signal, histogram = calcular_macd(close)
+    score += pts
+    detalles['Vela Rechazo'] = {'valor': texto, 'puntos': pts, 'max': 10, 'estado': estado}
+    
+    # 6. MACD (0-10 puntos)
+    macd, signal_line, histogram = calcular_macd(close)
     macd_actual = macd.iloc[-1]
-    signal_actual = signal.iloc[-1]
+    signal_actual = signal_line.iloc[-1]
     hist_actual = histogram.iloc[-1]
     hist_anterior = histogram.iloc[-2] if len(histogram) > 1 else 0
     
-    cruce_alcista = macd_actual > signal_actual and histogram.iloc[-2] <= 0 and hist_actual > 0
-    
-    if cruce_alcista:
-        pts = 20
-        estado = '🟢'
-        texto = "Cruce alcista"
-    elif macd_actual > signal_actual and hist_actual > hist_anterior:
-        pts = 15
-        estado = '🟢'
-        texto = "Tendencia alcista"
-    elif macd_actual > signal_actual:
+    if macd_actual > signal_actual and hist_actual > hist_anterior:
         pts = 10
-        estado = '🟡'
-        texto = "MACD positivo"
-    else:
+        estado = '🟢'
+        texto = "MACD alcista + momentum ↑"
+    elif macd_actual > signal_actual:
+        pts = 7
+        estado = '🟢'
+        texto = "MACD alcista"
+    elif macd_actual < signal_actual and hist_actual < hist_anterior:
         pts = 0
         estado = '🔴'
-        texto = "MACD negativo"
-    score += pts
-    detalles['MACD'] = {'valor': texto, 'puntos': pts, 'max': 20, 'estado': estado}
-    
-    # Volumen (0-10 puntos)
-    if 'Volume' in hist.columns:
-        cambio_vol, tendencia_vol = calcular_volumen_tendencia(hist['Volume'])
-        if tendencia_vol == "Creciente" and precio_actual > close.iloc[-5]:
-            pts = 10
-            estado = '🟢'
-            texto = f"Creciente (+{cambio_vol:.0f}%)"
-        elif tendencia_vol == "Creciente":
-            pts = 5
-            estado = '🟡'
-            texto = f"Creciente ({cambio_vol:+.0f}%)"
-        else:
-            pts = 3
-            estado = '🟡'
-            texto = tendencia_vol
-        score += pts
-        detalles['Volumen'] = {'valor': texto, 'puntos': pts, 'max': 10, 'estado': estado}
+        texto = "MACD bajista + momentum ↓"
+    elif macd_actual < signal_actual:
+        pts = 3
+        estado = '🔴'
+        texto = "MACD bajista"
     else:
-        detalles['Volumen'] = {'valor': 'N/A', 'puntos': 0, 'max': 10, 'estado': '⚪'}
+        pts = 5
+        estado = '🟡'
+        texto = "MACD neutral"
+    
+    score += pts
+    detalles['MACD'] = {'valor': texto, 'puntos': pts, 'max': 10, 'estado': estado}
+    
+    # 7. Volumen + Filtro ATR (0-10 puntos)
+    pts_vol = 5
+    texto_vol = "N/A"
+    estado_vol = '⚪'
+    
+    if 'Volume' in hist.columns:
+        volume = hist['Volume']
+        if len(volume) >= 20:
+            vol_ma = volume.rolling(window=20).mean().iloc[-1]
+            vol_actual = volume.iloc[-5:].mean()
+            vol_ratio = vol_actual / vol_ma if vol_ma > 0 else 1
+            
+            # Calcular ATR para detectar vela extrema
+            atr = calcular_atr(hist, 14)
+            if len(atr) > 0 and not np.isnan(atr.iloc[-1]):
+                rango_vela = hist['High'].iloc[-1] - hist['Low'].iloc[-1]
+                atr_ratio = rango_vela / atr.iloc[-1] if atr.iloc[-1] > 0 else 1
+                
+                # Penalizar si volumen alto + vela extrema (breakout, no mean reversion)
+                if vol_ratio > 2.0 and atr_ratio > 2.5:
+                    pts_vol = 0
+                    estado_vol = '🔴'
+                    texto_vol = f"⚠️ Breakout ({vol_ratio:.1f}x vol, {atr_ratio:.1f}x ATR)"
+                elif vol_ratio > 1.3 and precio_actual > ma50:
+                    pts_vol = 10
+                    estado_vol = '🟢'
+                    texto_vol = f"Alto ({vol_ratio:.1f}x) + tendencia ↑"
+                elif vol_ratio > 1.0:
+                    pts_vol = 7
+                    estado_vol = '🟡'
+                    texto_vol = f"Normal ({vol_ratio:.1f}x)"
+                else:
+                    pts_vol = 4
+                    estado_vol = '🟡'
+                    texto_vol = f"Bajo ({vol_ratio:.1f}x)"
+            else:
+                if vol_ratio > 1.3:
+                    pts_vol = 8
+                    estado_vol = '🟢'
+                    texto_vol = f"Alto ({vol_ratio:.1f}x)"
+                else:
+                    pts_vol = 5
+                    estado_vol = '🟡'
+                    texto_vol = f"Normal ({vol_ratio:.1f}x)"
+    
+    score += pts_vol
+    detalles['Volumen/ATR'] = {'valor': texto_vol, 'puntos': pts_vol, 'max': 10, 'estado': estado_vol}
     
     return score, detalles
 
@@ -1329,7 +2160,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Modo de Análisis")
 modo = st.sidebar.radio(
     "¿Qué quieres analizar?",
-    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "🌍 Análisis por Región", "📈 Comparador de Activos", "📊 Cartera (2+ activos)"],
+    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "📊 Señales de Trading", "🌍 Análisis por Región", "📈 Comparador de Activos", "📊 Cartera (2+ activos)"],
     index=0
 )
 
@@ -1578,6 +2409,82 @@ if modo == "🔍 Acción individual":
         col2.metric("Máximo 52 sem", f"{info.get('fiftyTwoWeekHigh', 'N/A')}")
         col3.metric("Media 50 días", f"{info.get('fiftyDayAverage', 0):.2f}")
         col4.metric("Media 200 días", f"{info.get('twoHundredDayAverage', 0):.2f}")
+        
+        # Gráfico de Bandas de Bollinger y RSI
+        if len(hist) >= 30:
+            st.markdown("---")
+            st.markdown("### 📊 Análisis Técnico: Bollinger(30) + RSI(13)")
+            
+            close = hist['Close']
+            bb_upper, bb_middle, bb_lower = calcular_bollinger_bands(close, period=30, std_dev=2)
+            rsi_series = calcular_rsi(close, period=13)
+            
+            # Crear figura con 2 subplots
+            fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
+            
+            # Determinar cuántos días mostrar
+            ultimos_dias = min(120, len(close))
+            
+            # Subplot 1: Precio con Bandas de Bollinger
+            ax1.plot(close.index[-ultimos_dias:], close.iloc[-ultimos_dias:], 'b-', linewidth=1.5, label='Precio')
+            ax1.plot(bb_upper.index[-ultimos_dias:], bb_upper.iloc[-ultimos_dias:], 'r--', linewidth=1, label='Banda Superior', alpha=0.7)
+            ax1.plot(bb_middle.index[-ultimos_dias:], bb_middle.iloc[-ultimos_dias:], 'g-', linewidth=1, label='Media (30)', alpha=0.7)
+            ax1.plot(bb_lower.index[-ultimos_dias:], bb_lower.iloc[-ultimos_dias:], 'r--', linewidth=1, label='Banda Inferior', alpha=0.7)
+            
+            ax1.fill_between(bb_upper.index[-ultimos_dias:], bb_lower.iloc[-ultimos_dias:], bb_upper.iloc[-ultimos_dias:], 
+                             alpha=0.1, color='blue')
+            
+            # Marcar precio actual
+            ax1.scatter(close.index[-1], close.iloc[-1], color='blue', s=100, zorder=5)
+            
+            ax1.set_title(f'{ticker} - Bandas de Bollinger(30, 2)', fontsize=12)
+            ax1.set_ylabel(f'Precio ({info.get("currency", "USD")})')
+            ax1.legend(loc='upper left', fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            
+            # Subplot 2: RSI
+            ax2.plot(rsi_series.index[-ultimos_dias:], rsi_series.iloc[-ultimos_dias:], 'purple', linewidth=1.5)
+            ax2.axhline(y=70, color='red', linestyle='--', alpha=0.7)
+            ax2.axhline(y=30, color='green', linestyle='--', alpha=0.7)
+            ax2.axhline(y=50, color='gray', linestyle=':', alpha=0.5)
+            ax2.fill_between(rsi_series.index[-ultimos_dias:], 30, 70, alpha=0.1, color='gray')
+            
+            # Colorear zonas de sobrecompra/sobreventa
+            rsi_vals = rsi_series.iloc[-ultimos_dias:]
+            ax2.fill_between(rsi_vals.index, rsi_vals, 70, where=(rsi_vals >= 70), alpha=0.3, color='red')
+            ax2.fill_between(rsi_vals.index, rsi_vals, 30, where=(rsi_vals <= 30), alpha=0.3, color='green')
+            
+            ax2.set_ylabel('RSI(13)')
+            ax2.set_ylim(0, 100)
+            ax2.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            st.pyplot(fig2)
+            
+            # Indicadores actuales
+            rsi_actual = rsi_series.iloc[-1]
+            bb_pos = (close.iloc[-1] - bb_lower.iloc[-1]) / (bb_upper.iloc[-1] - bb_lower.iloc[-1]) * 100
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            # RSI con colores
+            if rsi_actual <= 30:
+                col1.metric("RSI(13)", f"{rsi_actual:.1f}", delta="Sobreventa 🟢")
+            elif rsi_actual >= 70:
+                col1.metric("RSI(13)", f"{rsi_actual:.1f}", delta="Sobrecompra 🔴")
+            else:
+                col1.metric("RSI(13)", f"{rsi_actual:.1f}", delta="Neutral")
+            
+            # Posición Bollinger
+            if bb_pos <= 20:
+                col2.metric("Pos. Bollinger", f"{bb_pos:.0f}%", delta="Zona baja 🟢")
+            elif bb_pos >= 80:
+                col2.metric("Pos. Bollinger", f"{bb_pos:.0f}%", delta="Zona alta 🔴")
+            else:
+                col2.metric("Pos. Bollinger", f"{bb_pos:.0f}%", delta="Centro")
+            
+            col3.metric("Banda Superior", f"{bb_upper.iloc[-1]:.2f}")
+            col4.metric("Banda Inferior", f"{bb_lower.iloc[-1]:.2f}")
     
     st.markdown("---")
     
@@ -1934,57 +2841,61 @@ elif modo == "🎯 Recomendación compra/venta":
     
     st.markdown("---")
     
-    # --- GRÁFICO TÉCNICO ---
-    st.markdown("### 📉 Análisis Técnico Visual")
+    # --- GRÁFICO TÉCNICO CON BOLLINGER ---
+    st.markdown("### 📉 Análisis Técnico: Bollinger(30) + RSI(13) + MACD")
     
     if not hist_largo.empty:
         close = hist_largo['Close']
         
+        # Calcular Bandas de Bollinger
+        bb_upper, bb_middle, bb_lower = calcular_bollinger_bands(close, period=30, std_dev=2)
+        
         # Crear figura con subplots
         fig, axes = plt.subplots(3, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [3, 1, 1]})
         
-        # --- GRÁFICO DE PRECIO ---
+        # --- GRÁFICO DE PRECIO CON BOLLINGER ---
         ax1 = axes[0]
         ax1.plot(close.index, close, 'b-', linewidth=1.5, label='Precio')
         
-        # Medias móviles
-        if len(close) >= 50:
-            ma50 = close.rolling(window=50).mean()
-            ax1.plot(close.index, ma50, 'orange', linewidth=1, label='MA50')
+        # Bandas de Bollinger
+        ax1.plot(bb_upper.index, bb_upper, 'r--', linewidth=1, label='BB Superior', alpha=0.7)
+        ax1.plot(bb_middle.index, bb_middle, 'g-', linewidth=1, label='BB Media (30)', alpha=0.7)
+        ax1.plot(bb_lower.index, bb_lower, 'r--', linewidth=1, label='BB Inferior', alpha=0.7)
+        ax1.fill_between(bb_upper.index, bb_lower, bb_upper, alpha=0.1, color='blue')
         
+        # Medias móviles
         if len(close) >= 200:
             ma200 = close.rolling(window=200).mean()
-            ax1.plot(close.index, ma200, 'red', linewidth=1, label='MA200')
+            ax1.plot(close.index, ma200, 'purple', linewidth=1.5, label='SMA200', alpha=0.8)
         
-        # Soportes y resistencias
-        soportes, resistencias = calcular_soportes_resistencias(close)
+        # Marcar precio actual
+        ax1.scatter(close.index[-1], close.iloc[-1], color='blue', s=100, zorder=5)
         
-        for soporte in soportes[:2]:
-            ax1.axhline(y=soporte, color='green', linestyle='--', alpha=0.5, linewidth=1)
-            ax1.text(close.index[-1], soporte, f' S: {soporte:.2f}', va='center', fontsize=8, color='green')
+        # Colorear zonas extremas
+        for i in range(len(close)):
+            if close.iloc[i] <= bb_lower.iloc[i]:
+                ax1.scatter(close.index[i], close.iloc[i], color='green', s=20, alpha=0.5, zorder=4)
+            elif close.iloc[i] >= bb_upper.iloc[i]:
+                ax1.scatter(close.index[i], close.iloc[i], color='red', s=20, alpha=0.5, zorder=4)
         
-        for resistencia in resistencias[:2]:
-            ax1.axhline(y=resistencia, color='red', linestyle='--', alpha=0.5, linewidth=1)
-            ax1.text(close.index[-1], resistencia, f' R: {resistencia:.2f}', va='center', fontsize=8, color='red')
-        
-        ax1.fill_between(close.index, hist_largo['Low'], hist_largo['High'], alpha=0.1, color='blue')
-        ax1.set_title(f'{ticker} - Precio y Medias Móviles')
-        ax1.legend(loc='upper left')
+        ax1.set_title(f'{ticker} - Bandas de Bollinger(30, 2)')
+        ax1.legend(loc='upper left', fontsize=8)
         ax1.grid(True, alpha=0.3)
         ax1.set_ylabel('Precio')
         
-        # --- RSI ---
+        # --- RSI(13) ---
         ax2 = axes[1]
-        rsi = calcular_rsi(close)
+        rsi = calcular_rsi(close, period=13)
         ax2.plot(rsi.index, rsi, 'purple', linewidth=1)
-        ax2.axhline(y=70, color='red', linestyle='--', alpha=0.7)
-        ax2.axhline(y=30, color='green', linestyle='--', alpha=0.7)
+        ax2.axhline(y=70, color='red', linestyle='--', alpha=0.7, label='Sobrecompra (70)')
+        ax2.axhline(y=30, color='green', linestyle='--', alpha=0.7, label='Sobreventa (30)')
         ax2.axhline(y=50, color='gray', linestyle='-', alpha=0.3)
         ax2.fill_between(rsi.index, rsi, 70, where=(rsi >= 70), alpha=0.3, color='red')
         ax2.fill_between(rsi.index, rsi, 30, where=(rsi <= 30), alpha=0.3, color='green')
         ax2.set_ylim(0, 100)
-        ax2.set_title('RSI (14)')
+        ax2.set_title('RSI(13)')
         ax2.set_ylabel('RSI')
+        ax2.legend(loc='upper left', fontsize=8)
         ax2.grid(True, alpha=0.3)
         
         # --- MACD ---
@@ -2061,6 +2972,293 @@ elif modo == "🎯 Recomendación compra/venta":
         """)
 
 # ==================================================
+# MODO SEÑALES DE TRADING
+# ==================================================
+elif modo == "📊 Señales de Trading":
+    st.title("📊 Señales de Trading - Retorno a la Media")
+    st.markdown("""
+    **Estrategia completa**: RSI de Wilder(13), Bandas de Bollinger(30), filtro de tendencia mensual,
+    velas de rechazo, filtros de exclusión (ATR, bandwidth, volumen) y gestión monetaria.
+    """)
+    
+    if not TICKERS or not TICKERS[0]:
+        st.error("Introduce un ticker para analizar.")
+        st.stop()
+    
+    ticker = TICKERS[0]
+    
+    # Capital para position sizing
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 💰 Gestión Monetaria")
+        capital_usuario = st.number_input("Capital disponible (€)", value=100000, min_value=1000, step=1000)
+        riesgo_pct = st.slider("Riesgo por operación (%)", min_value=0.5, max_value=3.0, value=1.0, step=0.1)
+        min_rr = st.slider("R/R mínimo requerido", min_value=1.0, max_value=3.0, value=1.5, step=0.1)
+    
+    try:
+        with st.spinner(f"Analizando {ticker}..."):
+            data_accion = obtener_info_accion(ticker, "2y")
+        
+        if data_accion is None or data_accion['history'].empty:
+            st.error(f"No se pudieron obtener datos para {ticker}.")
+            st.stop()
+        
+        info = data_accion['info']
+        hist = data_accion['history']
+        
+    except Exception as e:
+        st.error(f"Error obteniendo datos: {e}")
+        st.stop()
+    
+    # Información básica
+    nombre = info.get('longName', info.get('shortName', ticker))
+    precio_actual = info.get('currentPrice', info.get('regularMarketPrice', hist['Close'].iloc[-1]))
+    moneda = info.get('currency', 'USD')
+    
+    st.markdown(f"## {nombre}")
+    st.markdown(f"**Precio actual:** {precio_actual:.2f} {moneda}")
+    
+    # Actualizar config con valores del usuario
+    cfg_usuario = ESTRATEGIA_CONFIG.copy()
+    cfg_usuario['risk_per_trade'] = riesgo_pct / 100
+    cfg_usuario['min_rr'] = min_rr
+    
+    # Análisis completo
+    resultado = analizar_retorno_media_completo(hist, cfg_usuario, capital_usuario)
+    
+    if not resultado['detalles']:
+        st.warning("No hay suficientes datos para el análisis completo (se requieren 200+ días).")
+        st.stop()
+    
+    señal = resultado['señal']
+    detalles = resultado['detalles']
+    
+    # Mostrar señal principal
+    st.markdown("---")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if señal == 'LONG':
+            st.success("### 🟢 LONG")
+            st.markdown(f"**Fuerza: {resultado['fuerza']}/100**")
+        elif señal == 'SHORT':
+            st.error("### 🔴 SHORT")
+            st.markdown(f"**Fuerza: {resultado['fuerza']}/100**")
+        elif señal == 'VIGILAR_LONG':
+            st.info("### 🔵 VIGILAR LONG")
+            st.markdown(f"**Fuerza: {resultado['fuerza']}/100**")
+        elif señal == 'VIGILAR_SHORT':
+            st.warning("### 🟠 VIGILAR SHORT")
+            st.markdown(f"**Fuerza: {resultado['fuerza']}/100**")
+        elif señal == 'FILTRO_ACTIVO':
+            st.error("### ⛔ FILTRO ACTIVO")
+            st.markdown("**No operar**")
+        else:
+            st.info("### ⚪ NEUTRAL")
+            st.markdown("**Esperar**")
+    
+    with col2:
+        st.metric("RSI Wilder(13)", f"{detalles['rsi']:.1f}", 
+                 delta="Sobreventa" if detalles['rsi'] <= 30 else "Sobrecompra" if detalles['rsi'] >= 70 else "Neutral")
+        st.metric("Posición %B", f"{detalles['bb_pct_b']:.0f}%",
+                 delta="Banda inferior" if detalles['bb_pct_b'] <= 20 else "Banda superior" if detalles['bb_pct_b'] >= 80 else "Centro")
+    
+    with col3:
+        st.metric("Tendencia Diaria", detalles['tendencia'].upper())
+        st.metric("Tendencia Mensual", detalles.get('tendencia_mensual', 'N/A').upper())
+    
+    with col4:
+        rechazo_texto = detalles['tipo_rechazo'] if detalles['tipo_rechazo'] else "Ninguno"
+        st.metric("Vela Rechazo", rechazo_texto.capitalize())
+        filtros_ok = "✅ OK" if resultado['filtros_ok'] else "❌ BLOQUEADO"
+        st.metric("Filtros Exclusión", filtros_ok)
+    
+    # Condiciones de la señal
+    st.markdown("### 📋 Condiciones de la Señal")
+    cols = st.columns(2)
+    for i, cond in enumerate(resultado['condiciones']):
+        cols[i % 2].markdown(f"- {cond}")
+    
+    # Filtros de exclusión detallados
+    if not resultado['filtros_ok']:
+        st.markdown("### ⚠️ Filtros de Exclusión Activos")
+        filtros = detalles.get('filtros', {})
+        if not filtros.get('rango_atr', True):
+            st.error(f"❌ Vela de rango extremo: {filtros.get('detalles', {}).get('rango_atr', '')}")
+        if not filtros.get('bandwidth', True):
+            st.warning(f"⚠️ Mercado estrecho: {filtros.get('detalles', {}).get('bandwidth', '')}")
+        if not filtros.get('volume_breakout', True):
+            st.error(f"❌ Breakout con volumen: {filtros.get('detalles', {}).get('volumen', '')}")
+    
+    # Niveles de Trading con gestión monetaria
+    if señal in ['LONG', 'SHORT', 'VIGILAR_LONG', 'VIGILAR_SHORT'] and resultado['niveles']:
+        st.markdown("---")
+        st.markdown("### 🎯 Niveles de Trading")
+        
+        niveles = resultado['niveles']
+        pos_size = resultado.get('position_sizing', {})
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("Entrada", f"{niveles['entrada']:.2f} {moneda}")
+        col2.metric("Stop Loss", f"{niveles['stop']:.2f} {moneda}",
+                   delta=f"{((niveles['stop']/niveles['entrada'])-1)*100:+.1f}%")
+        col3.metric("Objetivo Parcial (50%)", f"{niveles['objetivo_parcial']:.2f} {moneda}",
+                   delta=f"{((niveles['objetivo_parcial']/niveles['entrada'])-1)*100:+.1f}%")
+        col4.metric("Objetivo Extendido", f"{niveles['objetivo_extendido']:.2f} {moneda}",
+                   delta=f"{((niveles['objetivo_extendido']/niveles['entrada'])-1)*100:+.1f}%")
+        
+        # Segunda fila con R/R y posición
+        st.markdown("#### 📊 Ratios y Position Sizing")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        rr_color = "green" if niveles.get('rr_parcial', 0) >= min_rr else "red"
+        col1.metric("R/R Parcial", f"{niveles.get('rr_parcial', 0):.2f}",
+                   delta="✅ OK" if niveles.get('pasa_min_rr', False) else f"❌ < {min_rr}")
+        col2.metric("R/R Extendido", f"{niveles.get('rr_extendido', 0):.2f}")
+        
+        if pos_size:
+            col3.metric("Acciones/Contratos", f"{pos_size.get('qty', 0):.0f}")
+            col4.metric("Capital en riesgo", f"{pos_size.get('risk_cash', 0):.0f} €")
+            col5.metric("Valor posición", f"{pos_size.get('position_value', 0):.0f} € ({pos_size.get('pct_capital', 0):.1f}%)")
+        
+        # Aviso si no pasa R/R mínimo
+        if not niveles.get('pasa_min_rr', True):
+            st.warning(f"⚠️ El ratio R/R ({niveles.get('rr_parcial', 0):.2f}) es menor al mínimo requerido ({min_rr}). Considera no operar.")
+    
+    # Gráfico con Bandas de Bollinger
+    st.markdown("---")
+    st.markdown("### 📈 Gráfico con Bandas de Bollinger y RSI Wilder")
+    
+    close = hist['Close']
+    bb = calcular_bollinger_completo(close, period=30, n_std=2)
+    rsi_series = rsi_wilder(close, period=13)
+    sma200 = close.rolling(window=200).mean()
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
+    
+    ultimos_dias = min(180, len(close))
+    
+    # Subplot 1: Precio con Bandas de Bollinger
+    ax1.plot(close.index[-ultimos_dias:], close.iloc[-ultimos_dias:], 'b-', linewidth=1.5, label='Precio')
+    ax1.plot(bb['bb_up'].index[-ultimos_dias:], bb['bb_up'].iloc[-ultimos_dias:], 'r--', linewidth=1, label='Banda Superior', alpha=0.7)
+    ax1.plot(bb['bb_mid'].index[-ultimos_dias:], bb['bb_mid'].iloc[-ultimos_dias:], 'g-', linewidth=1, label='Media (30)', alpha=0.7)
+    ax1.plot(bb['bb_low'].index[-ultimos_dias:], bb['bb_low'].iloc[-ultimos_dias:], 'r--', linewidth=1, label='Banda Inferior', alpha=0.7)
+    ax1.plot(sma200.index[-ultimos_dias:], sma200.iloc[-ultimos_dias:], 'purple', linewidth=1, label='SMA200', alpha=0.5)
+    
+    ax1.fill_between(bb['bb_up'].index[-ultimos_dias:], bb['bb_low'].iloc[-ultimos_dias:], bb['bb_up'].iloc[-ultimos_dias:], 
+                     alpha=0.1, color='blue')
+    
+    # Marcar niveles si hay señal
+    if resultado['niveles']:
+        ax1.axhline(y=resultado['niveles']['entrada'], color='blue', linestyle='-', alpha=0.8, linewidth=2, label='Entrada')
+        ax1.axhline(y=resultado['niveles']['stop'], color='red', linestyle='--', alpha=0.8, linewidth=2, label='Stop')
+        ax1.axhline(y=resultado['niveles']['objetivo_parcial'], color='green', linestyle='--', alpha=0.8, linewidth=1.5, label='Obj. Parcial')
+        ax1.axhline(y=resultado['niveles']['objetivo_extendido'], color='darkgreen', linestyle=':', alpha=0.8, linewidth=1.5, label='Obj. Extendido')
+    
+    ax1.scatter(close.index[-1], close.iloc[-1], color='blue', s=100, zorder=5)
+    
+    ax1.set_title(f'{ticker} - Estrategia Retorno a la Media', fontsize=14)
+    ax1.set_ylabel('Precio')
+    ax1.legend(loc='upper left', fontsize=8)
+    ax1.grid(True, alpha=0.3)
+    
+    # Subplot 2: RSI Wilder
+    ax2.plot(rsi_series.index[-ultimos_dias:], rsi_series.iloc[-ultimos_dias:], 'purple', linewidth=1.5, label='RSI Wilder(13)')
+    ax2.axhline(y=70, color='red', linestyle='--', alpha=0.7, label='Sobrecompra (70)')
+    ax2.axhline(y=30, color='green', linestyle='--', alpha=0.7, label='Sobreventa (30)')
+    ax2.axhline(y=50, color='gray', linestyle=':', alpha=0.5)
+    ax2.fill_between(rsi_series.index[-ultimos_dias:], 30, 70, alpha=0.1, color='gray')
+    ax2.scatter(rsi_series.index[-1], rsi_series.iloc[-1], color='purple', s=100, zorder=5)
+    
+    ax2.set_title('RSI de Wilder (13)', fontsize=12)
+    ax2.set_ylabel('RSI')
+    ax2.set_ylim(0, 100)
+    ax2.legend(loc='upper left')
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    st.pyplot(fig)
+    
+    # Tabla de indicadores detallada
+    st.markdown("---")
+    st.markdown("### 📊 Detalle de Indicadores")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**Bandas de Bollinger (30, 2)**")
+        st.write(f"- Banda Superior: {detalles['bb_upper']:.2f}")
+        st.write(f"- Media Central: {detalles['bb_mid']:.2f}")
+        st.write(f"- Banda Inferior: {detalles['bb_lower']:.2f}")
+        st.write(f"- Posición %B: {detalles['bb_pct_b']:.1f}%")
+        st.write(f"- Bandwidth: {detalles.get('bb_width', 0):.2f}%")
+    
+    with col2:
+        st.markdown("**Tendencia y Momentum**")
+        st.write(f"- RSI Wilder(13): {detalles['rsi']:.1f}")
+        st.write(f"- SMA200: {detalles['sma200']:.2f}")
+        st.write(f"- Tendencia diaria: {detalles['tendencia'].capitalize()}")
+        st.write(f"- Tendencia mensual: {detalles.get('tendencia_mensual', 'N/A').capitalize()}")
+        st.write(f"- ATR(14): {detalles.get('atr', 0):.2f}")
+    
+    with col3:
+        st.markdown("**Vela de Rechazo**")
+        if detalles['tipo_rechazo']:
+            st.write(f"- Tipo: {detalles['tipo_rechazo'].capitalize()}")
+        else:
+            st.write("- No detectada")
+        
+        st.markdown("**Filtros de Exclusión**")
+        filtros = detalles.get('filtros', {})
+        det_filtros = filtros.get('detalles', {})
+        st.write(f"- Rango/ATR: {det_filtros.get('rango_atr', 'N/A')}")
+        st.write(f"- Bandwidth: {det_filtros.get('bandwidth', 'N/A')}")
+        st.write(f"- Volumen: {det_filtros.get('volumen', 'N/A')}")
+    
+    # Condiciones de la estrategia
+    st.markdown("---")
+    with st.expander("📖 Estrategia Completa - Documentación"):
+        st.markdown("""
+        ### SEÑALES DE ENTRADA
+        
+        **SEÑAL LONG (Compra) - 4 condiciones:**
+        1. ✅ Precio toca o cruza la banda inferior de Bollinger(30)
+        2. ✅ RSI de Wilder(13) ≤ 30 (sobreventa)
+        3. ✅ Vela de rechazo alcista (martillo: mecha inferior ≥ 1.5x cuerpo)
+        4. ✅ Tendencia principal NO bajista (combina estructura mensual + SMA200)
+        
+        **SEÑAL SHORT (Venta) - 4 condiciones:**
+        1. ✅ Precio toca o cruza la banda superior de Bollinger(30)
+        2. ✅ RSI de Wilder(13) ≥ 70 (sobrecompra)
+        3. ✅ Vela de rechazo bajista (estrella fugaz: mecha superior ≥ 1.5x cuerpo)
+        4. ✅ Tendencia principal NO alcista
+        
+        ### FILTROS DE EXCLUSIÓN (anti-breakout)
+        
+        - **Rango ATR**: No operar si la vela > 2.5x ATR(14) → movimiento extremo
+        - **Bandwidth**: No operar si ancho de bandas < percentil 20 → mercado estrecho
+        - **Volumen breakout**: No operar si volumen > 2x media Y precio muy fuera de banda → ruptura real
+        
+        ### GESTIÓN DE LA OPERACIÓN
+        
+        - **Stop Loss**: Mínimo/máximo de la vela de señal + 0.1% buffer
+        - **Objetivo parcial (50%)**: Banda media de Bollinger
+        - **Objetivo extendido (50%)**: Banda opuesta
+        - **Breakeven**: Mover stop a entrada tras cerrar parcial
+        - **Position sizing**: 1% de riesgo por operación (configurable)
+        - **R/R mínimo**: Solo operar si ratio ≥ 1.5 (configurable)
+        
+        ### FILTRO DE TENDENCIA MENSUAL
+        
+        Analiza los últimos 3 meses cerrados. Alcista si al menos 2 de 3 meses tienen:
+        - Máximo mensual creciente Y mínimo mensual creciente
+        
+        Se combina con la posición del precio respecto a la SMA200 para la tendencia final.
+        """)
+
+# ==================================================
 # MODO ANÁLISIS POR REGIÓN
 # ==================================================
 elif modo == "🌍 Análisis por Región":
@@ -2073,7 +3271,7 @@ elif modo == "🌍 Análisis por Región":
     # Función para analizar una acción
     @st.cache_data(ttl=7200, show_spinner=False)
     def analizar_accion_rapido(ticker):
-        """Analiza una acción y devuelve métricas resumidas."""
+        """Analiza una acción y devuelve métricas resumidas incluyendo señales de trading."""
         try:
             stock = yf.Ticker(ticker)
             hist = stock.history(period="1y")
@@ -2093,9 +3291,27 @@ elif modo == "🌍 Análisis por Región":
                 precio = hist['Close'].iloc[-1]
                 currency = 'USD'
             
-            # Calcular scores
+            # Calcular scores (ya usa las funciones mejoradas)
             s_fund, _ = score_fundamental(info)
-            s_tech, _ = score_tecnico(hist)
+            s_tech, detalles_tech = score_tecnico(hist)
+            
+            # Indicadores de trading adicionales
+            close = hist['Close']
+            
+            # RSI Wilder
+            rsi = rsi_wilder(close, 13).iloc[-1] if len(close) >= 13 else 50
+            
+            # Bollinger %B
+            if len(close) >= 30:
+                bb = calcular_bollinger_completo(close, 30, 2)
+                bb_pct_b = bb['bb_pct_b'].iloc[-1] * 100
+            else:
+                bb_pct_b = 50
+            
+            # Señal de Retorno a la Media
+            resultado_rm = analizar_retorno_media_completo(hist)
+            senal_rm = resultado_rm.get('señal', 'NEUTRAL')
+            fuerza_rm = resultado_rm.get('fuerza', 0)
             
             # HMM y GARCH
             returns = hist['Close'].pct_change().dropna()
@@ -2147,7 +3363,12 @@ elif modo == "🌍 Análisis por Región":
                 'regimen': regimen,
                 'prob_alcista': prob_alcista,
                 'vol_garch': vol_garch,
-                'recomendacion': recomendacion
+                'recomendacion': recomendacion,
+                # Nuevos campos de trading
+                'rsi': rsi,
+                'bb_pct_b': bb_pct_b,
+                'senal_rm': senal_rm,
+                'fuerza_rm': fuerza_rm
             }
         except Exception as e:
             return None
@@ -2198,6 +3419,9 @@ elif modo == "🌍 Análisis por Región":
         'Nombre': r['nombre'],
         'Región': r['region'].split()[0],  # Solo emoji
         'Score': f"{r['score_total']:.0f}",
+        'RSI': f"{'🟢' if r['rsi'] <= 30 else '🔴' if r['rsi'] >= 70 else '🟡'} {r['rsi']:.0f}",
+        'BB%': f"{'🟢' if r['bb_pct_b'] <= 20 else '🔴' if r['bb_pct_b'] >= 80 else '🟡'} {r['bb_pct_b']:.0f}%",
+        'Señal': f"{'🟢' if 'LONG' in r['senal_rm'] else '🔴' if 'SHORT' in r['senal_rm'] else '🔵' if 'VIGILAR' in r['senal_rm'] else '⚪'} {r['senal_rm']}",
         'Régimen': f"{'🟢' if r['regimen']=='alcista' else '🟡' if r['regimen']=='lateral' else '🔴' if r['regimen']=='bajista' else '⚪'} {r['regimen'].capitalize() if r['regimen'] != 'N/A' else 'N/A'}",
         'Vol.': f"{r['vol_garch']:.0%}",
         'Recomendación': r['recomendacion']
@@ -2207,7 +3431,7 @@ elif modo == "🌍 Análisis por Región":
     
     # --- FILTROS ---
     st.markdown("---")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         filtro_regimen = st.selectbox(
@@ -2222,9 +3446,15 @@ elif modo == "🌍 Análisis por Región":
         )
     
     with col3:
+        filtro_senal = st.selectbox(
+            "Filtrar por señal trading",
+            ["Todas", "🟢 LONG", "🔴 SHORT", "🔵 VIGILAR_LONG", "🟠 VIGILAR_SHORT", "📊 Con señal activa"]
+        )
+    
+    with col4:
         ordenar_por = st.selectbox(
             "Ordenar por",
-            ["Score Total", "Score Fundamental", "Score Técnico", "Menor Volatilidad", "Mayor Prob. Alcista"]
+            ["Score Total", "Score Fundamental", "Score Técnico", "RSI (sobreventa)", "Bollinger (extremos)", "Menor Volatilidad", "Mayor Prob. Alcista"]
         )
     
     # Aplicar filtros
@@ -2246,6 +3476,18 @@ elif modo == "🌍 Análisis por Región":
     elif "VENTA" in filtro_recom:
         resultados_filtrados = [r for r in resultados_filtrados if "VENTA" in r['recomendacion']]
     
+    # Filtro por señal de trading
+    if "LONG" in filtro_senal and "VIGILAR" not in filtro_senal:
+        resultados_filtrados = [r for r in resultados_filtrados if r['senal_rm'] == 'LONG']
+    elif "SHORT" in filtro_senal and "VIGILAR" not in filtro_senal:
+        resultados_filtrados = [r for r in resultados_filtrados if r['senal_rm'] == 'SHORT']
+    elif "VIGILAR_LONG" in filtro_senal:
+        resultados_filtrados = [r for r in resultados_filtrados if r['senal_rm'] == 'VIGILAR_LONG']
+    elif "VIGILAR_SHORT" in filtro_senal:
+        resultados_filtrados = [r for r in resultados_filtrados if r['senal_rm'] == 'VIGILAR_SHORT']
+    elif "Con señal" in filtro_senal:
+        resultados_filtrados = [r for r in resultados_filtrados if r['senal_rm'] not in ['NEUTRAL', 'FILTRO_ACTIVO', None]]
+    
     # Ordenar
     if ordenar_por == "Score Total":
         resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['score_total'], reverse=True)
@@ -2253,6 +3495,11 @@ elif modo == "🌍 Análisis por Región":
         resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['score_fund'], reverse=True)
     elif ordenar_por == "Score Técnico":
         resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['score_tech'], reverse=True)
+    elif ordenar_por == "RSI (sobreventa)":
+        resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['rsi'])  # Menor RSI primero
+    elif ordenar_por == "Bollinger (extremos)":
+        # Ordenar por distancia al extremo (0 o 100)
+        resultados_filtrados = sorted(resultados_filtrados, key=lambda x: min(x['bb_pct_b'], 100 - x['bb_pct_b']))
     elif ordenar_por == "Menor Volatilidad":
         resultados_filtrados = sorted(resultados_filtrados, key=lambda x: x['vol_garch'])
     elif ordenar_por == "Mayor Prob. Alcista":
@@ -2273,28 +3520,169 @@ elif modo == "🌍 Análisis por Región":
             avg_score = np.mean([r['score_total'] for r in resultados_region])
             alcistas = sum(1 for r in resultados_region if r['regimen'] == 'alcista')
             bajistas = sum(1 for r in resultados_region if r['regimen'] == 'bajista')
+            senales_long = sum(1 for r in resultados_region if 'LONG' in r['senal_rm'])
+            senales_short = sum(1 for r in resultados_region if 'SHORT' in r['senal_rm'])
             
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric("Score Medio", f"{avg_score:.0f}/100")
-            col2.metric("Acciones Alcistas", f"{alcistas}/{len(resultados_region)}")
-            col3.metric("Acciones Bajistas", f"{bajistas}/{len(resultados_region)}")
-            col4.metric("Top Score", f"{max(r['score_total'] for r in resultados_region):.0f}")
+            col2.metric("Régimen Alcista", f"{alcistas}/{len(resultados_region)}")
+            col3.metric("Régimen Bajista", f"{bajistas}/{len(resultados_region)}")
+            col4.metric("🟢 Señales LONG", f"{senales_long}")
+            col5.metric("🔴 Señales SHORT", f"{senales_short}")
             
             # Tabla de la región
             region_df = pd.DataFrame([{
                 'Ticker': r['ticker'],
                 'Nombre': r['nombre'],
                 'Precio': f"{r['precio']:.2f} {r['currency']}",
-                'Score Total': f"{r['score_total']:.0f}",
-                'Fund.': f"{r['score_fund']}",
-                'Téc.': f"{r['score_tech']}",
-                'Rég.': f"{r['score_regimen']:.0f}" if r['score_regimen'] else 'N/A',
+                'Score': f"{r['score_total']:.0f}",
+                'RSI': f"{'🟢' if r['rsi'] <= 30 else '🔴' if r['rsi'] >= 70 else '🟡'}{r['rsi']:.0f}",
+                'BB%': f"{'🟢' if r['bb_pct_b'] <= 20 else '🔴' if r['bb_pct_b'] >= 80 else '🟡'}{r['bb_pct_b']:.0f}",
+                'Señal': r['senal_rm'],
                 'Régimen': f"{'🟢' if r['regimen']=='alcista' else '🟡' if r['regimen']=='lateral' else '🔴' if r['regimen']=='bajista' else '⚪'}",
                 'Vol.': f"{r['vol_garch']:.0%}",
-                'Recomendación': r['recomendacion']
+                'Recom.': r['recomendacion'].split()[-1]  # Solo texto sin emoji
             } for r in resultados_region])
             
             st.dataframe(region_df, use_container_width=True, hide_index=True)
+    
+    # --- GRÁFICO DETALLADO DE ACCIÓN SELECCIONADA ---
+    st.markdown("---")
+    st.markdown("## 🔍 Gráfico Detallado de Acción")
+    st.markdown("Selecciona una acción para ver su gráfico con Bollinger, RSI y niveles de trading.")
+    
+    # Crear lista de opciones con información
+    opciones_acciones = [f"{r['ticker']} - {r['nombre']} ({r['senal_rm']}, Score: {r['score_total']:.0f})" 
+                         for r in todos_resultados]
+    
+    # Ordenar por señal activa primero
+    def ordenar_por_senal(opcion):
+        if 'LONG' in opcion and 'VIGILAR' not in opcion:
+            return 0
+        elif 'SHORT' in opcion and 'VIGILAR' not in opcion:
+            return 1
+        elif 'VIGILAR' in opcion:
+            return 2
+        else:
+            return 3
+    
+    opciones_acciones_ordenadas = sorted(opciones_acciones, key=ordenar_por_senal)
+    
+    accion_seleccionada = st.selectbox(
+        "Selecciona una acción para ver el gráfico:",
+        opciones_acciones_ordenadas,
+        index=0
+    )
+    
+    if accion_seleccionada:
+        ticker_seleccionado = accion_seleccionada.split(" - ")[0]
+        
+        # Buscar datos de la acción
+        datos_accion = next((r for r in todos_resultados if r['ticker'] == ticker_seleccionado), None)
+        
+        if datos_accion:
+            # Obtener historial completo
+            with st.spinner(f"Cargando gráfico de {ticker_seleccionado}..."):
+                try:
+                    stock = yf.Ticker(ticker_seleccionado)
+                    hist_detalle = stock.history(period="1y")
+                    
+                    if not hist_detalle.empty and len(hist_detalle) >= 50:
+                        # Análisis completo
+                        resultado_rm = analizar_retorno_media_completo(hist_detalle)
+                        
+                        # Mostrar métricas principales
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        
+                        col1.metric("Precio", f"{datos_accion['precio']:.2f} {datos_accion['currency']}")
+                        col2.metric("Score Total", f"{datos_accion['score_total']:.0f}/100")
+                        
+                        # RSI con color
+                        rsi_val = datos_accion['rsi']
+                        rsi_delta = "Sobreventa" if rsi_val <= 30 else "Sobrecompra" if rsi_val >= 70 else "Neutral"
+                        col3.metric("RSI(13)", f"{rsi_val:.1f}", delta=rsi_delta)
+                        
+                        # Bollinger con color
+                        bb_val = datos_accion['bb_pct_b']
+                        bb_delta = "Banda inf." if bb_val <= 20 else "Banda sup." if bb_val >= 80 else "Centro"
+                        col4.metric("Bollinger %B", f"{bb_val:.0f}%", delta=bb_delta)
+                        
+                        # Señal
+                        senal = datos_accion['senal_rm']
+                        col5.metric("Señal", senal)
+                        
+                        # Niveles de trading si hay señal
+                        if resultado_rm.get('niveles'):
+                            niveles = resultado_rm['niveles']
+                            st.markdown("#### 🎯 Niveles de Trading")
+                            col1, col2, col3, col4 = st.columns(4)
+                            col1.metric("Entrada", f"{niveles['entrada']:.2f}")
+                            col2.metric("Stop Loss", f"{niveles['stop']:.2f}", 
+                                       delta=f"{((niveles['stop']/niveles['entrada'])-1)*100:+.1f}%")
+                            col3.metric("Objetivo Parcial", f"{niveles['objetivo_parcial']:.2f}",
+                                       delta=f"{((niveles['objetivo_parcial']/niveles['entrada'])-1)*100:+.1f}%")
+                            col4.metric("R/R", f"{niveles.get('rr_parcial', 0):.2f}",
+                                       delta="✅ OK" if niveles.get('pasa_min_rr', False) else "❌ Bajo")
+                        
+                        # Gráfico con Bollinger y RSI
+                        close = hist_detalle['Close']
+                        bb = calcular_bollinger_completo(close, period=30, n_std=2)
+                        rsi_series = rsi_wilder(close, period=13)
+                        sma200 = close.rolling(window=200).mean()
+                        
+                        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), gridspec_kw={'height_ratios': [3, 1]})
+                        
+                        ultimos_dias = min(180, len(close))
+                        
+                        # Subplot 1: Precio con Bandas de Bollinger
+                        ax1.plot(close.index[-ultimos_dias:], close.iloc[-ultimos_dias:], 'b-', linewidth=1.5, label='Precio')
+                        ax1.plot(bb['bb_up'].index[-ultimos_dias:], bb['bb_up'].iloc[-ultimos_dias:], 'r--', linewidth=1, alpha=0.7)
+                        ax1.plot(bb['bb_mid'].index[-ultimos_dias:], bb['bb_mid'].iloc[-ultimos_dias:], 'g-', linewidth=1, alpha=0.7, label='BB Media')
+                        ax1.plot(bb['bb_low'].index[-ultimos_dias:], bb['bb_low'].iloc[-ultimos_dias:], 'r--', linewidth=1, alpha=0.7, label='BB Bandas')
+                        
+                        if len(sma200.dropna()) > 0:
+                            ax1.plot(sma200.index[-ultimos_dias:], sma200.iloc[-ultimos_dias:], 'purple', linewidth=1, alpha=0.5, label='SMA200')
+                        
+                        ax1.fill_between(bb['bb_up'].index[-ultimos_dias:], bb['bb_low'].iloc[-ultimos_dias:], bb['bb_up'].iloc[-ultimos_dias:], 
+                                         alpha=0.1, color='blue')
+                        
+                        # Marcar niveles si hay señal
+                        if resultado_rm.get('niveles'):
+                            niveles = resultado_rm['niveles']
+                            ax1.axhline(y=niveles['entrada'], color='blue', linestyle='-', alpha=0.8, linewidth=2)
+                            ax1.axhline(y=niveles['stop'], color='red', linestyle='--', alpha=0.8, linewidth=2)
+                            ax1.axhline(y=niveles['objetivo_parcial'], color='green', linestyle='--', alpha=0.8, linewidth=1.5)
+                        
+                        ax1.scatter(close.index[-1], close.iloc[-1], color='blue', s=100, zorder=5)
+                        ax1.set_title(f'{ticker_seleccionado} - {datos_accion["nombre"]}', fontsize=12)
+                        ax1.set_ylabel('Precio')
+                        ax1.legend(loc='upper left', fontsize=8)
+                        ax1.grid(True, alpha=0.3)
+                        
+                        # Subplot 2: RSI
+                        ax2.plot(rsi_series.index[-ultimos_dias:], rsi_series.iloc[-ultimos_dias:], 'purple', linewidth=1.5)
+                        ax2.axhline(y=70, color='red', linestyle='--', alpha=0.7)
+                        ax2.axhline(y=30, color='green', linestyle='--', alpha=0.7)
+                        ax2.axhline(y=50, color='gray', linestyle=':', alpha=0.5)
+                        ax2.fill_between(rsi_series.index[-ultimos_dias:], 30, 70, alpha=0.1, color='gray')
+                        ax2.scatter(rsi_series.index[-1], rsi_series.iloc[-1], color='purple', s=100, zorder=5)
+                        ax2.set_ylabel('RSI(13)')
+                        ax2.set_ylim(0, 100)
+                        ax2.grid(True, alpha=0.3)
+                        
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        
+                        # Condiciones de la señal
+                        if resultado_rm.get('condiciones'):
+                            with st.expander("📋 Condiciones de la señal"):
+                                for cond in resultado_rm['condiciones']:
+                                    st.markdown(f"- {cond}")
+                    else:
+                        st.warning(f"Datos insuficientes para {ticker_seleccionado}")
+                        
+                except Exception as e:
+                    st.error(f"Error cargando gráfico: {e}")
     
     # --- COMPARATIVA ENTRE REGIONES ---
     st.markdown("---")

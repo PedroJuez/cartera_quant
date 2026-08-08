@@ -2217,6 +2217,34 @@ elif modo == "🌍 Análisis por Región":
         list(REGIONES.keys()),
         default=["🇪🇸 España (IBEX)", "🇺🇸 USA Tech"]
     )
+    
+    # Selector de horizonte temporal
+    st.sidebar.subheader("⏱️ Horizonte de Inversión")
+    horizonte_region = st.sidebar.radio(
+        "Selecciona tu horizonte:",
+        ["📅 Corto plazo (trading)", "📆 Medio plazo (swing)", "📈 Largo plazo (inversión)"],
+        index=1,
+        help="El horizonte determina qué peso dar a cada tipo de análisis",
+        key="horizonte_region"
+    )
+    
+    # Ponderaciones según horizonte
+    if horizonte_region == "📅 Corto plazo (trading)":
+        peso_fund_region = 0.10
+        peso_tech_region = 0.60
+        peso_reg_region = 0.30
+        st.sidebar.caption("🎯 Téc 60% + Rég 30% + Fund 10%")
+    elif horizonte_region == "📆 Medio plazo (swing)":
+        peso_fund_region = 0.30
+        peso_tech_region = 0.35
+        peso_reg_region = 0.35
+        st.sidebar.caption("⚖️ Téc 35% + Rég 35% + Fund 30%")
+    else:  # Largo plazo
+        peso_fund_region = 0.50
+        peso_tech_region = 0.25
+        peso_reg_region = 0.25
+        st.sidebar.caption("📊 Fund 50% + Téc 25% + Rég 25%")
+    
     TICKERS = []  # No se usa en este modo
 else:
     if usar_predefinidos:
@@ -2264,12 +2292,39 @@ st.sidebar.markdown("---")
 
 # Parámetros para modo recomendación
 if modo == "🎯 Recomendación compra/venta":
-    st.sidebar.subheader("⚖️ Ponderación")
-    peso_fundamental = st.sidebar.slider(
-        "Peso Análisis Fundamental",
-        0, 100, 50, 5,
-        help="Porcentaje de peso para el análisis fundamental vs técnico"
-    ) / 100
+    st.sidebar.subheader("⏱️ Horizonte de Inversión")
+    
+    horizonte = st.sidebar.radio(
+        "Selecciona tu horizonte:",
+        ["📅 Corto plazo (trading)", "📆 Medio plazo (swing)", "📈 Largo plazo (inversión)"],
+        index=1,
+        help="El horizonte determina qué peso dar a cada tipo de análisis"
+    )
+    
+    # Ponderaciones según horizonte
+    if horizonte == "📅 Corto plazo (trading)":
+        peso_fundamental = 0.10
+        peso_tecnico = 0.60
+        peso_regimen = 0.30
+        st.sidebar.caption("🎯 Téc 60% + Rég 30% + Fund 10%")
+    elif horizonte == "📆 Medio plazo (swing)":
+        peso_fundamental = 0.30
+        peso_tecnico = 0.35
+        peso_regimen = 0.35
+        st.sidebar.caption("⚖️ Téc 35% + Rég 35% + Fund 30%")
+    else:  # Largo plazo
+        peso_fundamental = 0.50
+        peso_tecnico = 0.25
+        peso_regimen = 0.25
+        st.sidebar.caption("📊 Fund 50% + Téc 25% + Rég 25%")
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**¿Cuál elegir?**")
+    st.sidebar.markdown("""
+    - **Corto**: Días/semanas. Trading activo.
+    - **Medio**: Semanas/meses. Swing trading.
+    - **Largo**: Meses/años. Inversión valor.
+    """)
 
 if modo == "📊 Cartera (2+ activos)":
     st.sidebar.subheader("💰 Inversión")
@@ -2666,7 +2721,7 @@ elif modo == "🎯 Recomendación compra/venta":
                 s_regimen, detalles_regimen = score_regimen_combinado(hmm_result, garch_result)
     
     # Generar recomendación (con o sin HMM/GARCH)
-    rec = generar_recomendacion(s_fund, s_tech, s_regimen, peso_fundamental)
+    rec = generar_recomendacion(s_fund, s_tech, s_regimen, peso_fundamental, peso_tecnico, peso_regimen)
     
     # --- HEADER ---
     st.markdown(f"## {info.get('longName', ticker)}")
@@ -2678,11 +2733,23 @@ elif modo == "🎯 Recomendación compra/venta":
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
+        # Texto de ponderación según horizonte
+        if peso_tecnico == 0.60:
+            horizonte_texto = "📅 Corto plazo"
+            ponderacion_texto = f"Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}% + Fund {int(peso_fundamental*100)}%"
+        elif peso_tecnico == 0.35:
+            horizonte_texto = "📆 Medio plazo"
+            ponderacion_texto = f"Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}% + Fund {int(peso_fundamental*100)}%"
+        else:
+            horizonte_texto = "📈 Largo plazo"
+            ponderacion_texto = f"Fund {int(peso_fundamental*100)}% + Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}%"
+        
         st.markdown(f"""
         <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 15px; border: 2px solid {'#00ff88' if rec['color'] == '🟢' else '#ffaa00' if rec['color'] == '🟡' else '#ff4444'};">
             <h1 style="font-size: 3em; margin: 0;">{rec['color']}</h1>
             <h2 style="color: {'#00ff88' if rec['color'] == '🟢' else '#ffaa00' if rec['color'] == '🟡' else '#ff4444'}; margin: 10px 0;">{rec['recomendacion']}</h2>
             <p style="font-size: 2.5em; font-weight: bold; margin: 0;">{rec['score_total']:.0f}/100</p>
+            <p style="color: #888; font-size: 0.9em; margin: 5px 0;">{horizonte_texto} | {ponderacion_texto}</p>
             <p style="color: #aaa; margin-top: 10px;">{rec['explicacion']}</p>
         </div>
         """, unsafe_allow_html=True)
@@ -2698,6 +2765,7 @@ elif modo == "🎯 Recomendación compra/venta":
     
     with col1:
         st.markdown(f"### 📊 Score Fundamental: {s_fund}/100")
+        st.caption(f"Peso: {int(peso_fundamental*100)}%")
         st.progress(s_fund / 100)
         
         for indicador, datos in detalles_fund.items():
@@ -2710,6 +2778,7 @@ elif modo == "🎯 Recomendación compra/venta":
     
     with col2:
         st.markdown(f"### 📈 Score Técnico: {s_tech}/100")
+        st.caption(f"Peso: {int(peso_tecnico*100)}%")
         st.progress(s_tech / 100)
         
         for indicador, datos in detalles_tech.items():
@@ -2719,6 +2788,7 @@ elif modo == "🎯 Recomendación compra/venta":
     if col3 is not None and s_regimen is not None and detalles_regimen is not None:
         with col3:
             st.markdown(f"### 🔮 Score Régimen: {s_regimen:.0f}/100")
+            st.caption(f"Peso: {int(peso_regimen*100)}%")
             st.progress(s_regimen / 100)
             
             if 'error' not in detalles_regimen:
@@ -3264,13 +3334,21 @@ elif modo == "📊 Señales de Trading":
 elif modo == "🌍 Análisis por Región":
     st.title("🌍 Análisis por Región Geográfica")
     
+    # Mostrar horizonte seleccionado
+    if horizonte_region == "📅 Corto plazo (trading)":
+        st.info(f"📅 **Horizonte: Corto plazo** | Ponderación: Téc {int(peso_tech_region*100)}% + Rég {int(peso_reg_region*100)}% + Fund {int(peso_fund_region*100)}%")
+    elif horizonte_region == "📆 Medio plazo (swing)":
+        st.info(f"📆 **Horizonte: Medio plazo** | Ponderación: Téc {int(peso_tech_region*100)}% + Rég {int(peso_reg_region*100)}% + Fund {int(peso_fund_region*100)}%")
+    else:
+        st.info(f"📈 **Horizonte: Largo plazo** | Ponderación: Fund {int(peso_fund_region*100)}% + Téc {int(peso_tech_region*100)}% + Rég {int(peso_reg_region*100)}%")
+    
     if not regiones_seleccionadas:
         st.warning("Selecciona al menos una región en el panel lateral.")
         st.stop()
     
     # Función para analizar una acción
     @st.cache_data(ttl=7200, show_spinner=False)
-    def analizar_accion_rapido(ticker):
+    def analizar_accion_rapido(ticker, peso_fund=0.30, peso_tech=0.35, peso_reg=0.35):
         """Analiza una acción y devuelve métricas resumidas incluyendo señales de trading."""
         try:
             stock = yf.Ticker(ticker)
@@ -3320,10 +3398,14 @@ elif modo == "🌍 Análisis por Región":
             
             if hmm_res or garch_res:
                 s_regimen, _ = score_regimen_combinado(hmm_res, garch_res)
-                score_total = s_fund * 0.4 + s_tech * 0.3 + s_regimen * 0.3
+                # Usar pesos dinámicos según horizonte
+                score_total = s_fund * peso_fund + s_tech * peso_tech + s_regimen * peso_reg
             else:
                 s_regimen = None
-                score_total = s_fund * 0.57 + s_tech * 0.43
+                # Sin régimen, ajustar pesos entre fundamental y técnico
+                peso_fund_adj = peso_fund / (peso_fund + peso_tech)
+                peso_tech_adj = peso_tech / (peso_fund + peso_tech)
+                score_total = s_fund * peso_fund_adj + s_tech * peso_tech_adj
             
             # Régimen HMM
             if hmm_res:
@@ -3389,7 +3471,7 @@ elif modo == "🌍 Análisis por Región":
         
         for ticker in tickers_region:
             status_text.text(f"Analizando {ticker}...")
-            resultado = analizar_accion_rapido(ticker)
+            resultado = analizar_accion_rapido(ticker, peso_fund_region, peso_tech_region, peso_reg_region)
             
             if resultado:
                 resultado['region'] = region
