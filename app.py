@@ -2220,16 +2220,20 @@ if modo == "🔍 Acción individual" or modo == "🎯 Recomendación compra/vent
         todas_acciones = sorted(list(set(todas_acciones)))
         TICKER_INDIVIDUAL = st.sidebar.selectbox("Selecciona acción", todas_acciones)
     else:
-        # Usar ticker seleccionado de la búsqueda si existe
-        valor_default = st.session_state.get('ticker_seleccionado', 'SAN.MC')
+        # Inicializar ticker en session_state si no existe
+        if 'ticker_input' not in st.session_state:
+            st.session_state['ticker_input'] = 'SAN.MC'
+        
+        # Si hay ticker seleccionado de búsqueda, actualizarlo
+        if 'ticker_seleccionado' in st.session_state:
+            st.session_state['ticker_input'] = st.session_state['ticker_seleccionado']
+            del st.session_state['ticker_seleccionado']
+        
         TICKER_INDIVIDUAL = st.sidebar.text_input(
             "Introduce ticker",
-            value=valor_default,
+            key="ticker_input",
             help="Ejemplo: AAPL, MSFT, SAN.MC. Usa la búsqueda ↑ para encontrar tickers."
         ).strip().upper()
-        # Limpiar selección después de usarla
-        if 'ticker_seleccionado' in st.session_state and TICKER_INDIVIDUAL == st.session_state['ticker_seleccionado']:
-            del st.session_state['ticker_seleccionado']
     TICKERS = [TICKER_INDIVIDUAL] if TICKER_INDIVIDUAL else []
 elif modo == "🌍 Análisis por Región":
     # Selector de regiones
