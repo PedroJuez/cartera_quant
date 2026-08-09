@@ -4412,7 +4412,7 @@ elif modo == "📈 Comparador de Activos":
                             precios_df = pd.DataFrame(precios_disponibles)
                             
                             # Rellenar valores faltantes hacia adelante y luego hacia atrás
-                            precios_df = precios_df.fillna(method='ffill').fillna(method='bfill')
+                            precios_df = precios_df.ffill().bfill()
                             
                             # Eliminar filas con NaN restantes
                             precios_df = precios_df.dropna()
@@ -4601,15 +4601,37 @@ elif modo == "📈 Comparador de Activos":
         
         st.markdown("Compara la evolución de hasta 5 activos.")
         
+        # Diccionario de nombres descriptivos
+        NOMBRES_ETFS = {
+            "SPY": "SPY (S&P 500)",
+            "QQQ": "QQQ (Nasdaq 100)",
+            "VTI": "VTI (Total USA)",
+            "EEM": "EEM (Emergentes)",
+            "BND": "BND (Bonos USA)",
+            "TLT": "TLT (Bonos Largo)",
+            "GLD": "GLD (Oro)",
+            "VGK": "VGK (Europa)",
+            "EWP": "EWP (España)",
+            "AGG": "AGG (Bonos Agregado)",
+            "IWM": "IWM (Small Caps)",
+            "LQD": "LQD (Corp. Inv Grade)",
+            "HYG": "HYG (High Yield)",
+            "SLV": "SLV (Plata)",
+            "VNQ": "VNQ (Inmobiliario)",
+            "XLK": "XLK (Tecnología)",
+            "XLF": "XLF (Financiero)",
+            "XLE": "XLE (Energía)",
+        }
+        
         # Selector de activos
         col1, col2 = st.columns([2, 1])
         
         with col1:
             activos_comparar = st.multiselect(
                 "Selecciona activos para comparar",
-                ["SPY", "QQQ", "VTI", "EEM", "BND", "TLT", "GLD", "VGK", "EWP", "AGG", 
-                 "IWM", "LQD", "HYG", "SLV", "VNQ", "XLK", "XLF", "XLE"],
-                default=["SPY", "BND", "GLD"]
+                list(NOMBRES_ETFS.keys()),
+                default=["SPY", "BND", "GLD"],
+                format_func=lambda x: NOMBRES_ETFS.get(x, x)
             )
         
         with col2:
@@ -4642,7 +4664,9 @@ elif modo == "📈 Comparador de Activos":
                 
                 for ticker in activos_comparar:
                     if ticker in data_norm.columns:
-                        ax.plot(data_norm.index, data_norm[ticker], linewidth=2, label=ticker)
+                        # Usar nombre descriptivo en la leyenda
+                        label = NOMBRES_ETFS.get(ticker, ticker)
+                        ax.plot(data_norm.index, data_norm[ticker], linewidth=2, label=label)
                 
                 ax.axhline(y=100, color='gray', linestyle='--', alpha=0.5)
                 ax.set_xlabel('Fecha')
@@ -4667,7 +4691,7 @@ elif modo == "📈 Comparador de Activos":
                         max_dd = ((precios / precios.cummax()) - 1).min() * 100
                         
                         metricas.append({
-                            'Ticker': ticker,
+                            'Activo': NOMBRES_ETFS.get(ticker, ticker),
                             'Rentabilidad': f"{rent:+.1f}%",
                             'Volatilidad': f"{vol:.1f}%",
                             'Sharpe': f"{sharpe:.2f}",
