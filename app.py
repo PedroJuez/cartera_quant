@@ -4333,38 +4333,35 @@ elif modo == "📈 Comparador de Activos":
                 with st.spinner("Analizando acciones y optimizando cartera..."):
                     todas_acciones = []
                     precios_historicos = {}
+                    errores = []
+                    
+                    progress_text = st.empty()
                     
                     for region in regiones_analizar:
                         if region in REGIONES:
-                            tickers_region = REGIONES[region][:6]  # Top 6 de cada región
+                            tickers_region = REGIONES[region][:5]  # Top 5 de cada región
                             
                             for ticker in tickers_region:
                                 try:
+                                    progress_text.text(f"Analizando {ticker}...")
                                     stock = yf.Ticker(ticker)
                                     hist = stock.history(period="1y")
                                     
                                     if hist.empty or len(hist) < 50:
+                                        errores.append(f"{ticker}: datos insuficientes")
                                         continue
                                     
                                     info = stock.info
-                                    nombre = info.get('shortName') or ticker
-                                    precio = info.get('currentPrice') or hist['Close'].iloc[-1]
+                                    nombre = info.get('shortName') or info.get('longName') or ticker
+                                    precio = hist['Close'].iloc[-1]
                                     
-                                    # Calcular scores
+                                    # Calcular scores (simplificado para velocidad)
                                     s_fund, _ = score_fundamental(info)
                                     s_tech, _ = score_tecnico(hist)
                                     
-                                    # HMM/GARCH si disponible
-                                    returns = hist['Close'].pct_change().dropna()
-                                    hmm_res = detectar_regimenes_hmm(returns) if HMM_AVAILABLE else None
-                                    garch_res = predecir_volatilidad_garch(returns) if GARCH_AVAILABLE else None
-                                    
-                                    if hmm_res or garch_res:
-                                        s_regimen, _ = score_regimen_combinado(hmm_res, garch_res)
-                                        score_total = s_fund * peso_fund_calc + s_tech * peso_tech_calc + s_regimen * peso_reg_calc
-                                    else:
-                                        s_regimen = 50
-                                        score_total = s_fund * peso_fund_calc + s_tech * peso_tech_calc + 50 * peso_reg_calc
+                                    # Score combinado según plazo (sin HMM/GARCH para velocidad)
+                                    s_regimen = 50  # Neutral si no hay HMM/GARCH
+                                    score_total = s_fund * peso_fund_calc + s_tech * peso_tech_calc + s_regimen * peso_reg_calc
                                     
                                     # Señal de trading
                                     resultado_rm = analizar_retorno_media_completo(hist)
@@ -4372,7 +4369,7 @@ elif modo == "📈 Comparador de Activos":
                                     
                                     todas_acciones.append({
                                         'ticker': ticker,
-                                        'nombre': nombre[:25],
+                                        'nombre': nombre[:25] if nombre else ticker,
                                         'precio': precio,
                                         'score': score_total,
                                         's_fund': s_fund,
@@ -4384,8 +4381,20 @@ elif modo == "📈 Comparador de Activos":
                                     # Guardar precios para Markowitz
                                     precios_historicos[ticker] = hist['Close']
                                     
-                                except:
+                                except Exception as e:
+                                    errores.append(f"{ticker}: {str(e)[:30]}")
                                     continue
+                    
+                    progress_text.empty()
+                    
+                    # Mostrar resumen del análisis
+                    if todas_acciones:
+                        st.success(f"✅ Analizadas {len(todas_acciones)} acciones de {len(regiones_analizar)} regiones")
+                    
+                    if errores and len(errores) < 5:
+                        with st.expander("⚠️ Algunas acciones no pudieron analizarse"):
+                            for err in errores:
+                                st.caption(err)
                     
                     # Ordenar por score y seleccionar top N
                     todas_acciones.sort(key=lambda x: x['score'], reverse=True)
@@ -4395,107 +4404,122 @@ elif modo == "📈 Comparador de Activos":
                         # Crear DataFrame de precios para las acciones seleccionadas
                         tickers_seleccionados = [a['ticker'] for a in top_acciones]
                         
-                        # Filtrar solo los tickers que tenemos
-                        precios_df = pd.DataFrame({t: precios_historicos[t] for t in tickers_seleccionados if t in precios_historicos})
-                        precios_df = precios_df.dropna()
+                        # Filtrar solo los tickers que tenemos precios
+                        precios_disponibles = {t: precios_historicos[t] for t in tickers_seleccionados if t in precios_historicos}
                         
-                        if len(precios_df.columns) >= 2 and len(precios_df) >= 50:
-                            # Aplicar optimización de Markowitz
-                            try:
-                                # Max weight según diversificación
-                                max_weight = 0.40 if perfil in ["Conservador", "Moderado"] else 0.50
-                                resultado_opt = optimal_portfolio(precios_df, rf=0.02, max_weight=max_weight)
-                                
-                                pesos_optimos = resultado_opt['Weights']
-                                sharpe = resultado_opt['Sharpe']
-                                ret_esperado = resultado_opt['Return'] * 100
-                                vol_esperada = resultado_opt['Vol'] * 100
-                                
-                                # Mostrar resultados
-                                st.success(f"✅ Cartera optimizada con **{len(precios_df.columns)} acciones** | Sharpe: {sharpe:.2f} | Ret. esperado: {ret_esperado:.1f}% | Vol: {vol_esperada:.1f}%")
-                                
-                                col_tabla, col_grafico = st.columns([1, 1])
-                                
-                                with col_tabla:
-                                    st.markdown("#### 📊 Pesos Óptimos")
+                        if len(precios_disponibles) >= 2:
+                            # Crear DataFrame y alinear fechas
+                            precios_df = pd.DataFrame(precios_disponibles)
+                            
+                            # Rellenar valores faltantes hacia adelante y luego hacia atrás
+                            precios_df = precios_df.fillna(method='ffill').fillna(method='bfill')
+                            
+                            # Eliminar filas con NaN restantes
+                            precios_df = precios_df.dropna()
+                            
+                            st.caption(f"📊 Datos de precios: {len(precios_df)} días para {len(precios_df.columns)} acciones")
+                            
+                            if len(precios_df.columns) >= 2 and len(precios_df) >= 50:
+                                # Aplicar optimización de Markowitz
+                                try:
+                                    # Max weight según diversificación
+                                    max_weight = 0.40 if perfil in ["Conservador", "Moderado"] else 0.50
+                                    resultado_opt = optimal_portfolio(precios_df, rf=0.02, max_weight=max_weight)
                                     
-                                    # Crear tabla con pesos
-                                    tabla_pesos = []
-                                    for i, ticker in enumerate(precios_df.columns):
-                                        peso = pesos_optimos[i]
-                                        importe_accion = importe_rv * peso
-                                        precio_accion = precios_df[ticker].iloc[-1]
-                                        n_acciones = importe_accion / precio_accion
+                                    pesos_optimos = resultado_opt['Weights']
+                                    sharpe = resultado_opt['Sharpe']
+                                    ret_esperado = resultado_opt['Return'] * 100
+                                    vol_esperada = resultado_opt['Vol'] * 100
+                                    
+                                    # Mostrar resultados
+                                    st.success(f"✅ Cartera optimizada con **{len(precios_df.columns)} acciones** | Sharpe: {sharpe:.2f} | Ret. esperado: {ret_esperado:.1f}% | Vol: {vol_esperada:.1f}%")
+                                    
+                                    col_tabla, col_grafico = st.columns([1, 1])
+                                    
+                                    with col_tabla:
+                                        st.markdown("#### 📊 Pesos Óptimos")
                                         
-                                        # Buscar info de la acción
-                                        accion_info = next((a for a in top_acciones if a['ticker'] == ticker), {})
+                                        # Crear tabla con pesos
+                                        tabla_pesos = []
+                                        for i, ticker in enumerate(precios_df.columns):
+                                            peso = pesos_optimos[i]
+                                            importe_accion = importe_rv * peso
+                                            precio_accion = precios_df[ticker].iloc[-1]
+                                            n_acciones = importe_accion / precio_accion
+                                            
+                                            # Buscar info de la acción
+                                            accion_info = next((a for a in top_acciones if a['ticker'] == ticker), {})
+                                            
+                                            tabla_pesos.append({
+                                                'Ticker': ticker,
+                                                'Score': f"{accion_info.get('score', 0):.0f}",
+                                                'Peso': f"{peso*100:.1f}%",
+                                                'Importe': f"{importe_accion:,.0f}€",
+                                                'Acciones': f"{n_acciones:.1f}"
+                                            })
                                         
-                                        tabla_pesos.append({
-                                            'Ticker': ticker,
-                                            'Score': f"{accion_info.get('score', 0):.0f}",
-                                            'Peso': f"{peso*100:.1f}%",
-                                            'Importe': f"{importe_accion:,.0f}€",
-                                            'Acciones': f"{n_acciones:.1f}"
-                                        })
-                                    
-                                    st.dataframe(pd.DataFrame(tabla_pesos), use_container_width=True, hide_index=True)
-                                    
-                                    if max_weight < 0.5:
-                                        st.caption(f"⚠️ Diversificación forzada: máximo {int(max_weight*100)}% por activo")
-                                
-                                with col_grafico:
-                                    st.markdown("#### 🥧 Distribución")
-                                    
-                                    # Gráfico de pastel
-                                    fig_pie, ax_pie = plt.subplots(figsize=(6, 5))
-                                    
-                                    labels_pie = list(precios_df.columns)
-                                    sizes_pie = [p * 100 for p in pesos_optimos]
-                                    colors_rv = plt.cm.Set3(np.linspace(0, 1, len(labels_pie)))
-                                    
-                                    ax_pie.pie(sizes_pie, labels=labels_pie, autopct='%1.1f%%', 
-                                              colors=colors_rv, startangle=90)
-                                    ax_pie.set_title('Asignación Óptima')
-                                    
-                                    st.pyplot(fig_pie)
-                                
-                                # Detalles de cada acción
-                                st.markdown("#### 📋 Detalle de Acciones Seleccionadas")
-                                
-                                for accion in top_acciones:
-                                    if accion['ticker'] in precios_df.columns:
-                                        idx = list(precios_df.columns).index(accion['ticker'])
-                                        peso = pesos_optimos[idx]
-                                        importe_accion = importe_rv * peso
+                                        st.dataframe(pd.DataFrame(tabla_pesos), use_container_width=True, hide_index=True)
                                         
-                                        # Determinar recomendación
-                                        if accion['score'] >= 65:
-                                            rec_emoji = "🟢"
-                                        elif accion['score'] >= 50:
-                                            rec_emoji = "🟡"
-                                        else:
-                                            rec_emoji = "🔴"
+                                        if max_weight < 0.5:
+                                            st.caption(f"⚠️ Diversificación forzada: máximo {int(max_weight*100)}% por activo")
+                                    
+                                    with col_grafico:
+                                        st.markdown("#### 🥧 Distribución")
                                         
-                                        col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
-                                        with col_a:
-                                            st.markdown(f"**{accion['ticker']}** - {accion['nombre']}")
-                                            st.caption(f"📍 {accion['region']} | Señal: {accion['senal']}")
-                                        with col_b:
-                                            st.metric("Score", f"{accion['score']:.0f}")
-                                        with col_c:
-                                            st.metric("Peso", f"{peso*100:.1f}%")
-                                        with col_d:
-                                            st.metric("Invertir", f"{importe_accion:,.0f}€")
+                                        # Gráfico de pastel
+                                        fig_pie, ax_pie = plt.subplots(figsize=(6, 5))
                                         
-                                        st.markdown("---")
-                                
-                            except Exception as e:
-                                st.warning(f"No se pudo optimizar: {e}. Mostrando distribución equitativa.")
-                                # Fallback a distribución equitativa
-                                for accion in top_acciones:
-                                    st.markdown(f"- **{accion['ticker']}**: {accion['nombre']} (Score: {accion['score']:.0f})")
+                                        labels_pie = list(precios_df.columns)
+                                        sizes_pie = [p * 100 for p in pesos_optimos]
+                                        colors_rv = plt.cm.Set3(np.linspace(0, 1, len(labels_pie)))
+                                        
+                                        ax_pie.pie(sizes_pie, labels=labels_pie, autopct='%1.1f%%', 
+                                                  colors=colors_rv, startangle=90)
+                                        ax_pie.set_title('Asignación Óptima')
+                                        
+                                        st.pyplot(fig_pie)
+                                    
+                                    # Detalles de cada acción
+                                    st.markdown("#### 📋 Detalle de Acciones Seleccionadas")
+                                    
+                                    for accion in top_acciones:
+                                        if accion['ticker'] in precios_df.columns:
+                                            idx = list(precios_df.columns).index(accion['ticker'])
+                                            peso = pesos_optimos[idx]
+                                            importe_accion = importe_rv * peso
+                                            
+                                            # Determinar recomendación
+                                            if accion['score'] >= 65:
+                                                rec_emoji = "🟢"
+                                            elif accion['score'] >= 50:
+                                                rec_emoji = "🟡"
+                                            else:
+                                                rec_emoji = "🔴"
+                                            
+                                            col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
+                                            with col_a:
+                                                st.markdown(f"**{accion['ticker']}** - {accion['nombre']}")
+                                                st.caption(f"📍 {accion['region']} | Señal: {accion['senal']}")
+                                            with col_b:
+                                                st.metric("Score", f"{accion['score']:.0f}")
+                                            with col_c:
+                                                st.metric("Peso", f"{peso*100:.1f}%")
+                                            with col_d:
+                                                st.metric("Invertir", f"{importe_accion:,.0f}€")
+                                            
+                                            st.markdown("---")
+                                    
+                                except Exception as e:
+                                    st.warning(f"No se pudo optimizar: {e}. Mostrando distribución equitativa.")
+                                    # Fallback a distribución equitativa
+                                    for accion in top_acciones:
+                                        st.markdown(f"- **{accion['ticker']}**: {accion['nombre']} (Score: {accion['score']:.0f})")
+                            else:
+                                st.warning("Datos insuficientes para optimización. Se necesitan al menos 2 acciones con 50 días de datos.")
                         else:
-                            st.warning("Datos insuficientes para optimización. Se necesitan al menos 2 acciones con 50 días de datos.")
+                            st.warning("No hay suficientes datos de precios para optimizar. Mostrando acciones seleccionadas:")
+                            for accion in top_acciones:
+                                st.markdown(f"- **{accion['ticker']}**: {accion['nombre']} (Score: {accion['score']:.0f})")
                     else:
                         st.warning("No se encontraron suficientes acciones para analizar.")
             else:

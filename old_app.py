@@ -144,6 +144,55 @@ PERFILES_RIESGO = {
     }
 }
 
+# ETFs específicos por categoría para sugerencias concretas
+ETFS_POR_CATEGORIA = {
+    "Renta Fija": {
+        "Corto plazo": [
+            {"ticker": "SHY", "nombre": "iShares 1-3 Year Treasury Bond", "descripcion": "Bonos del Tesoro USA corto plazo, muy seguro"},
+            {"ticker": "VGSH", "nombre": "Vanguard Short-Term Treasury", "descripcion": "Bonos del Tesoro USA 1-3 años"},
+            {"ticker": "BIL", "nombre": "SPDR Treasury Bills", "descripcion": "Letras del Tesoro USA, máxima liquidez"},
+        ],
+        "Medio plazo": [
+            {"ticker": "BND", "nombre": "Vanguard Total Bond Market", "descripcion": "Bonos diversificados USA, equilibrio riesgo/retorno"},
+            {"ticker": "AGG", "nombre": "iShares Core U.S. Aggregate Bond", "descripcion": "Bonos investment grade USA"},
+            {"ticker": "LQD", "nombre": "iShares iBoxx $ Inv Grade Corp", "descripcion": "Bonos corporativos alta calidad"},
+        ],
+        "Largo plazo": [
+            {"ticker": "TLT", "nombre": "iShares 20+ Year Treasury Bond", "descripcion": "Bonos largos USA, más sensibles a tipos"},
+            {"ticker": "VCLT", "nombre": "Vanguard Long-Term Corporate", "descripcion": "Bonos corporativos largo plazo"},
+            {"ticker": "BLV", "nombre": "Vanguard Long-Term Bond", "descripcion": "Bonos largo plazo diversificados"},
+        ]
+    },
+    "Oro/Commodities": {
+        "Corto plazo": [
+            {"ticker": "GLD", "nombre": "SPDR Gold Shares", "descripcion": "Oro físico, refugio en incertidumbre"},
+            {"ticker": "SLV", "nombre": "iShares Silver Trust", "descripcion": "Plata física, más volátil que oro"},
+        ],
+        "Medio plazo": [
+            {"ticker": "GLD", "nombre": "SPDR Gold Shares", "descripcion": "Oro físico, cobertura inflación"},
+            {"ticker": "DJP", "nombre": "iPath Bloomberg Commodity", "descripcion": "Cesta diversificada de commodities"},
+            {"ticker": "GSG", "nombre": "iShares S&P GSCI Commodity", "descripcion": "Commodities diversificados"},
+        ],
+        "Largo plazo": [
+            {"ticker": "IAU", "nombre": "iShares Gold Trust", "descripcion": "Oro físico, menor expense ratio"},
+            {"ticker": "PDBC", "nombre": "Invesco Optimum Yield Commodity", "descripcion": "Commodities con optimización de carry"},
+            {"ticker": "GDX", "nombre": "VanEck Gold Miners", "descripcion": "Mineras de oro, apalancamiento al oro"},
+        ]
+    },
+    "Liquidez": {
+        "Corto plazo": [
+            {"ticker": "SGOV", "nombre": "iShares 0-3 Month Treasury Bond", "descripcion": "Casi equivalente a efectivo, máxima seguridad"},
+            {"ticker": "BIL", "nombre": "SPDR Treasury Bills", "descripcion": "Letras del Tesoro, liquidez inmediata"},
+        ],
+        "Medio plazo": [
+            {"ticker": "SHV", "nombre": "iShares Short Treasury Bond", "descripcion": "Bonos muy cortos, baja volatilidad"},
+        ],
+        "Largo plazo": [
+            {"ticker": "SHV", "nombre": "iShares Short Treasury Bond", "descripcion": "Mantener liquidez mínima necesaria"},
+        ]
+    }
+}
+
 
 @st.cache_data(ttl=3600)
 def obtener_rentabilidad_etf(ticker, periodo="1y"):
@@ -4169,6 +4218,14 @@ elif modo == "📈 Comparador de Activos":
                 index=1
             )
             
+            # Selector de plazo
+            plazo = st.radio(
+                "Horizonte temporal",
+                ["Corto plazo", "Medio plazo", "Largo plazo"],
+                index=1,
+                help="Corto: 1-2 años | Medio: 3-5 años | Largo: +5 años"
+            )
+            
             inversion = st.number_input(
                 "Inversión total (€)",
                 min_value=1000,
@@ -4180,6 +4237,14 @@ elif modo == "📈 Comparador de Activos":
             st.markdown("---")
             st.markdown(f"**{perfil}**")
             st.write(PERFILES_RIESGO[perfil]['descripcion'])
+            
+            # Descripción del plazo
+            plazos_desc = {
+                "Corto plazo": "⏱️ **1-2 años**: Prioriza liquidez y baja volatilidad.",
+                "Medio plazo": "📆 **3-5 años**: Equilibrio entre crecimiento y estabilidad.",
+                "Largo plazo": "📈 **+5 años**: Maximiza crecimiento, tolera volatilidad."
+            }
+            st.info(plazos_desc[plazo])
         
         with col2:
             st.markdown("### Distribución Recomendada")
@@ -4222,31 +4287,289 @@ elif modo == "📈 Comparador de Activos":
                 for cat, datos in cartera['distribucion'].items()
             ])
             st.dataframe(dist_df, use_container_width=True, hide_index=True)
-            
-            # ETFs sugeridos
-            st.markdown("### 💡 ETFs Sugeridos")
-            
-            etfs_sugeridos = cartera['etfs_sugeridos']
-            
-            with st.spinner("Obteniendo datos de ETFs sugeridos..."):
-                datos_sugeridos = []
-                for ticker in etfs_sugeridos:
-                    datos = obtener_rentabilidad_etf(ticker, "1y")
-                    if datos:
-                        datos_sugeridos.append(datos)
-            
-            if datos_sugeridos:
-                sug_df = pd.DataFrame([
-                    {
-                        'Ticker': d['ticker'],
-                        'Nombre': d['nombre'][:30],
-                        'Rent. 1Y': f"{d['rentabilidad']:+.1f}%",
-                        'Volatilidad': f"{d['volatilidad']:.1f}%",
-                        'Precio': f"${d['precio']:.2f}"
-                    }
-                    for d in datos_sugeridos
-                ])
-                st.dataframe(sug_df, use_container_width=True, hide_index=True)
+        
+        # =====================================================
+        # SUGERENCIAS CONCRETAS POR CATEGORÍA
+        # =====================================================
+        st.markdown("---")
+        st.markdown("## 🎯 Sugerencias Concretas de Inversión")
+        st.caption(f"Basadas en perfil **{perfil}** y horizonte **{plazo}**")
+        
+        # Determinar pesos según plazo para análisis de renta variable
+        if plazo == "Corto plazo":
+            peso_fund_calc = 0.00
+            peso_tech_calc = 0.90
+            peso_reg_calc = 0.10
+        elif plazo == "Medio plazo":
+            peso_fund_calc = 0.30
+            peso_tech_calc = 0.35
+            peso_reg_calc = 0.35
+        else:  # Largo plazo
+            peso_fund_calc = 0.50
+            peso_tech_calc = 0.25
+            peso_reg_calc = 0.25
+        
+        # Crear tabs para cada categoría
+        cat_tabs = st.tabs(["📈 Renta Variable", "📊 Renta Fija", "🥇 Oro/Commodities", "💰 Liquidez"])
+        
+        # TAB Renta Variable - Análisis + Optimización Markowitz
+        with cat_tabs[0]:
+            importe_rv = cartera['distribucion'].get('Renta Variable', {}).get('importe', 0)
+            if importe_rv > 0:
+                st.markdown(f"### 📈 Renta Variable ({importe_rv:,.0f}€)")
+                st.info(f"🔍 Analizando las mejores acciones para **{plazo}** y optimizando cartera con Markowitz")
+                
+                # Seleccionar regiones según perfil
+                if perfil == "Conservador":
+                    regiones_analizar = ["🇪🇸 España (IBEX)", "🇺🇸 USA Tech"]
+                    n_acciones_final = 3
+                elif perfil == "Moderado":
+                    regiones_analizar = ["🇪🇸 España (IBEX)", "🇺🇸 USA Tech", "🇩🇪 Alemania (DAX)"]
+                    n_acciones_final = 4
+                else:  # Agresivo, Muy Agresivo
+                    regiones_analizar = ["🇺🇸 USA Tech", "🇪🇸 España (IBEX)", "🇩🇪 Alemania (DAX)", "🇫🇷 Francia (CAC)"]
+                    n_acciones_final = 5
+                
+                with st.spinner("Analizando acciones y optimizando cartera..."):
+                    todas_acciones = []
+                    precios_historicos = {}
+                    
+                    for region in regiones_analizar:
+                        if region in REGIONES:
+                            tickers_region = REGIONES[region][:6]  # Top 6 de cada región
+                            
+                            for ticker in tickers_region:
+                                try:
+                                    stock = yf.Ticker(ticker)
+                                    hist = stock.history(period="1y")
+                                    
+                                    if hist.empty or len(hist) < 50:
+                                        continue
+                                    
+                                    info = stock.info
+                                    nombre = info.get('shortName') or ticker
+                                    precio = info.get('currentPrice') or hist['Close'].iloc[-1]
+                                    
+                                    # Calcular scores
+                                    s_fund, _ = score_fundamental(info)
+                                    s_tech, _ = score_tecnico(hist)
+                                    
+                                    # HMM/GARCH si disponible
+                                    returns = hist['Close'].pct_change().dropna()
+                                    hmm_res = detectar_regimenes_hmm(returns) if HMM_AVAILABLE else None
+                                    garch_res = predecir_volatilidad_garch(returns) if GARCH_AVAILABLE else None
+                                    
+                                    if hmm_res or garch_res:
+                                        s_regimen, _ = score_regimen_combinado(hmm_res, garch_res)
+                                        score_total = s_fund * peso_fund_calc + s_tech * peso_tech_calc + s_regimen * peso_reg_calc
+                                    else:
+                                        s_regimen = 50
+                                        score_total = s_fund * peso_fund_calc + s_tech * peso_tech_calc + 50 * peso_reg_calc
+                                    
+                                    # Señal de trading
+                                    resultado_rm = analizar_retorno_media_completo(hist)
+                                    senal = resultado_rm.get('señal', 'NEUTRAL')
+                                    
+                                    todas_acciones.append({
+                                        'ticker': ticker,
+                                        'nombre': nombre[:25],
+                                        'precio': precio,
+                                        'score': score_total,
+                                        's_fund': s_fund,
+                                        's_tech': s_tech,
+                                        'senal': senal,
+                                        'region': region
+                                    })
+                                    
+                                    # Guardar precios para Markowitz
+                                    precios_historicos[ticker] = hist['Close']
+                                    
+                                except:
+                                    continue
+                    
+                    # Ordenar por score y seleccionar top N
+                    todas_acciones.sort(key=lambda x: x['score'], reverse=True)
+                    top_acciones = todas_acciones[:n_acciones_final]
+                    
+                    if len(top_acciones) >= 2:
+                        # Crear DataFrame de precios para las acciones seleccionadas
+                        tickers_seleccionados = [a['ticker'] for a in top_acciones]
+                        
+                        # Filtrar solo los tickers que tenemos
+                        precios_df = pd.DataFrame({t: precios_historicos[t] for t in tickers_seleccionados if t in precios_historicos})
+                        precios_df = precios_df.dropna()
+                        
+                        if len(precios_df.columns) >= 2 and len(precios_df) >= 50:
+                            # Aplicar optimización de Markowitz
+                            try:
+                                # Max weight según diversificación
+                                max_weight = 0.40 if perfil in ["Conservador", "Moderado"] else 0.50
+                                resultado_opt = optimal_portfolio(precios_df, rf=0.02, max_weight=max_weight)
+                                
+                                pesos_optimos = resultado_opt['Weights']
+                                sharpe = resultado_opt['Sharpe']
+                                ret_esperado = resultado_opt['Return'] * 100
+                                vol_esperada = resultado_opt['Vol'] * 100
+                                
+                                # Mostrar resultados
+                                st.success(f"✅ Cartera optimizada con **{len(precios_df.columns)} acciones** | Sharpe: {sharpe:.2f} | Ret. esperado: {ret_esperado:.1f}% | Vol: {vol_esperada:.1f}%")
+                                
+                                col_tabla, col_grafico = st.columns([1, 1])
+                                
+                                with col_tabla:
+                                    st.markdown("#### 📊 Pesos Óptimos")
+                                    
+                                    # Crear tabla con pesos
+                                    tabla_pesos = []
+                                    for i, ticker in enumerate(precios_df.columns):
+                                        peso = pesos_optimos[i]
+                                        importe_accion = importe_rv * peso
+                                        precio_accion = precios_df[ticker].iloc[-1]
+                                        n_acciones = importe_accion / precio_accion
+                                        
+                                        # Buscar info de la acción
+                                        accion_info = next((a for a in top_acciones if a['ticker'] == ticker), {})
+                                        
+                                        tabla_pesos.append({
+                                            'Ticker': ticker,
+                                            'Score': f"{accion_info.get('score', 0):.0f}",
+                                            'Peso': f"{peso*100:.1f}%",
+                                            'Importe': f"{importe_accion:,.0f}€",
+                                            'Acciones': f"{n_acciones:.1f}"
+                                        })
+                                    
+                                    st.dataframe(pd.DataFrame(tabla_pesos), use_container_width=True, hide_index=True)
+                                    
+                                    if max_weight < 0.5:
+                                        st.caption(f"⚠️ Diversificación forzada: máximo {int(max_weight*100)}% por activo")
+                                
+                                with col_grafico:
+                                    st.markdown("#### 🥧 Distribución")
+                                    
+                                    # Gráfico de pastel
+                                    fig_pie, ax_pie = plt.subplots(figsize=(6, 5))
+                                    
+                                    labels_pie = list(precios_df.columns)
+                                    sizes_pie = [p * 100 for p in pesos_optimos]
+                                    colors_rv = plt.cm.Set3(np.linspace(0, 1, len(labels_pie)))
+                                    
+                                    ax_pie.pie(sizes_pie, labels=labels_pie, autopct='%1.1f%%', 
+                                              colors=colors_rv, startangle=90)
+                                    ax_pie.set_title('Asignación Óptima')
+                                    
+                                    st.pyplot(fig_pie)
+                                
+                                # Detalles de cada acción
+                                st.markdown("#### 📋 Detalle de Acciones Seleccionadas")
+                                
+                                for accion in top_acciones:
+                                    if accion['ticker'] in precios_df.columns:
+                                        idx = list(precios_df.columns).index(accion['ticker'])
+                                        peso = pesos_optimos[idx]
+                                        importe_accion = importe_rv * peso
+                                        
+                                        # Determinar recomendación
+                                        if accion['score'] >= 65:
+                                            rec_emoji = "🟢"
+                                        elif accion['score'] >= 50:
+                                            rec_emoji = "🟡"
+                                        else:
+                                            rec_emoji = "🔴"
+                                        
+                                        col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
+                                        with col_a:
+                                            st.markdown(f"**{accion['ticker']}** - {accion['nombre']}")
+                                            st.caption(f"📍 {accion['region']} | Señal: {accion['senal']}")
+                                        with col_b:
+                                            st.metric("Score", f"{accion['score']:.0f}")
+                                        with col_c:
+                                            st.metric("Peso", f"{peso*100:.1f}%")
+                                        with col_d:
+                                            st.metric("Invertir", f"{importe_accion:,.0f}€")
+                                        
+                                        st.markdown("---")
+                                
+                            except Exception as e:
+                                st.warning(f"No se pudo optimizar: {e}. Mostrando distribución equitativa.")
+                                # Fallback a distribución equitativa
+                                for accion in top_acciones:
+                                    st.markdown(f"- **{accion['ticker']}**: {accion['nombre']} (Score: {accion['score']:.0f})")
+                        else:
+                            st.warning("Datos insuficientes para optimización. Se necesitan al menos 2 acciones con 50 días de datos.")
+                    else:
+                        st.warning("No se encontraron suficientes acciones para analizar.")
+            else:
+                st.info("Este perfil no incluye Renta Variable")
+        
+        # TAB Renta Fija
+        with cat_tabs[1]:
+            importe_rf = cartera['distribucion'].get('Renta Fija', {}).get('importe', 0)
+            if importe_rf > 0:
+                st.markdown(f"### 📊 Renta Fija ({importe_rf:,.0f}€)")
+                
+                etfs_rf = ETFS_POR_CATEGORIA.get("Renta Fija", {}).get(plazo, [])
+                
+                if etfs_rf:
+                    inversion_por_etf = importe_rf / len(etfs_rf)
+                    
+                    for etf in etfs_rf:
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            st.markdown(f"**{etf['ticker']}** - {etf['nombre']}")
+                            st.caption(etf['descripcion'])
+                        with col_b:
+                            st.markdown(f"~**{inversion_por_etf:,.0f}€**")
+                        st.markdown("---")
+            else:
+                st.info("Este perfil no incluye Renta Fija")
+        
+        # TAB Oro/Commodities
+        with cat_tabs[2]:
+            importe_oro = cartera['distribucion'].get('Oro/Commodities', {}).get('importe', 0)
+            if importe_oro > 0:
+                st.markdown(f"### 🥇 Oro/Commodities ({importe_oro:,.0f}€)")
+                
+                etfs_oro = ETFS_POR_CATEGORIA.get("Oro/Commodities", {}).get(plazo, [])
+                
+                if etfs_oro:
+                    inversion_por_etf = importe_oro / len(etfs_oro)
+                    
+                    for etf in etfs_oro:
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            st.markdown(f"**{etf['ticker']}** - {etf['nombre']}")
+                            st.caption(etf['descripcion'])
+                        with col_b:
+                            st.markdown(f"~**{inversion_por_etf:,.0f}€**")
+                        st.markdown("---")
+            else:
+                st.info("Este perfil no incluye Oro/Commodities")
+        
+        # TAB Liquidez
+        with cat_tabs[3]:
+            importe_liq = cartera['distribucion'].get('Liquidez', {}).get('importe', 0)
+            if importe_liq > 0:
+                st.markdown(f"### 💰 Liquidez ({importe_liq:,.0f}€)")
+                
+                etfs_liq = ETFS_POR_CATEGORIA.get("Liquidez", {}).get(plazo, [])
+                
+                st.info("💡 **Opciones para liquidez:**")
+                
+                # ETFs de liquidez
+                if etfs_liq:
+                    st.markdown("**ETFs de muy corto plazo:**")
+                    for etf in etfs_liq:
+                        st.markdown(f"- **{etf['ticker']}**: {etf['nombre']} - {etf['descripcion']}")
+                
+                # Alternativas
+                st.markdown("**Otras alternativas:**")
+                st.markdown("""
+                - 🏦 **Cuentas remuneradas**: Trade Republic (~3.5%), Revolut
+                - 💶 **Fondos monetarios**: Cualquier fondo monetario de tu banco
+                - 📈 **Letras del Tesoro**: Subastas mensuales en tesoro.es
+                """)
+            else:
+                st.info("Este perfil no requiere mantener liquidez")
     
     # TAB 4: Comparador Visual
     with tab4:
