@@ -2201,6 +2201,7 @@ with st.sidebar.expander("🔎 Buscar ticker por nombre"):
             with col2:
                 if st.button("📋", key=f"copy_{ticker}", help=f"Usar {ticker}"):
                     st.session_state['ticker_seleccionado'] = ticker
+                    st.session_state['modo_analisis'] = "🔍 Acción individual"  # Volver a Acción individual
                     st.rerun()
         
         if not todos_resultados:
@@ -2217,10 +2218,15 @@ st.sidebar.markdown("---")
 
 # Modo de análisis
 st.sidebar.subheader("🎯 Modo de Análisis")
+
+# Inicializar modo en session_state si no existe
+if 'modo_analisis' not in st.session_state:
+    st.session_state['modo_analisis'] = "🔍 Acción individual"
+
 modo = st.sidebar.radio(
     "¿Qué quieres analizar?",
     ["🔍 Acción individual", "🎯 Recomendación compra/venta", "📊 Señales de Trading", "🌍 Análisis por Región", "📈 Comparador de Activos", "📊 Cartera (2+ activos)"],
-    index=0
+    key="modo_analisis"
 )
 
 st.sidebar.subheader("📈 Activos")
