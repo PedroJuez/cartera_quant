@@ -13,6 +13,31 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
 
+# ==================================================
+# MÓDULOS ESTRATEGIA V2 + PUENTE TÁCTICO
+# --------------------------------------------------
+# Si falta alguno de los archivos, la app sigue funcionando
+# exactamente como antes (MODULOS_V2 = False).
+# ==================================================
+try:
+    from signals import CONFIG_V2 as _CFG_V2
+    from adaptador_v1 import analizar_retorno_media_completo_v2 as _rm_v2
+    from estrategia_v2_ui import render_estrategia_v2
+    from seleccion_tactica import aplicar_score_tactico
+    from puente_ui import (panel_config_tactico, calcular_estados, panel_seleccion,
+                           panel_plan_entrada, panel_rebalanceo, panel_validacion)
+    MODULOS_V2 = True
+    _ERROR_V2 = ""
+except Exception as _e:
+    MODULOS_V2 = False
+    _ERROR_V2 = str(_e)
+    _CFG_V2 = {'rsi_period': 13, 'rsi_oversold': 30.0, 'rsi_overbought': 70.0,
+               'bb_period': 30, 'bb_std': 2.0, 'sma_trend': 200}
+
+# INTERRUPTORES GLOBALES
+MOTOR_V2 = True     # False -> motor original de retorno a la media (3 de 4 condiciones)
+PUENTE_V2 = True    # False -> la selección del Comparador vuelve a ordenar solo por score
+
 # HMM y GARCH (opcionales)
 try:
     from hmmlearn.hmm import GaussianHMM
@@ -1164,6 +1189,24 @@ def analizar_retorno_media(hist_df, rsi_period=13, bb_period=30, bb_std=2):
     return señal, detalles
 
 
+# ==================================================
+# DESPACHADOR DEL MOTOR V2
+# --------------------------------------------------
+# Redirige las 4 llamadas a analizar_retorno_media_completo() (Señales de
+# Trading, Análisis por Región, detalle por región y Calculadora de Cartera)
+# al motor v2, manteniendo el formato de salida original.
+# ==================================================
+if MODULOS_V2:
+    _rm_v1_original = analizar_retorno_media_completo
+
+    def analizar_retorno_media_completo(df, cfg=None, capital=100000):
+        """AND estricto de las 4 condiciones, puerta de R/R, stop por ATR y
+        filtro de régimen de volatilidad. MOTOR_V2 = False vuelve al original."""
+        if MOTOR_V2:
+            return _rm_v2(df, cfg, capital)
+        return _rm_v1_original(df, cfg, capital)
+
+
 def score_tecnico_mejorado(hist_df):
     """
     Score técnico mejorado con Bandas de Bollinger y estrategia de Retorno a la Media.
@@ -2274,9 +2317,13 @@ if 'modo_analisis' not in st.session_state:
 
 modo = st.sidebar.radio(
     "¿Qué quieres analizar?",
-    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "📊 Señales de Trading", "🌍 Análisis por Región", "📈 Comparador de Activos", "📊 Cartera (2+ activos)"],
+    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "📊 Señales de Trading", "🌍 Análisis por Región", "📈 Comparador de Activos", "📊 Cartera (2+ activos)", "🧪 Estrategia v2 (backtest)"],
     key="modo_analisis"
 )
+
+# Configuración del puente táctico (solo en el Comparador)
+if MODULOS_V2 and PUENTE_V2 and modo == "📈 Comparador de Activos":
+    st.session_state['cfg_tactico'] = panel_config_tactico()
 
 st.sidebar.subheader("📈 Activos")
 
@@ -2606,7 +2653,7 @@ if modo == "🔍 Acción individual":
             # Subplot 1: Precio con Bandas de Bollinger
             ax1.plot(close.index[-ultimos_dias:], close.iloc[-ultimos_dias:], 'b-', linewidth=1.5, label='Precio')
             ax1.plot(bb_upper.index[-ultimos_dias:], bb_upper.iloc[-ultimos_dias:], 'r--', linewidth=1, label='Banda Superior', alpha=0.7)
-            ax1.plot(bb_middle.index[-ultimos_dias:], bb_middle.iloc[-ultimos_dias:], 'g-', linewidth=1, label='Media (30)', alpha=0.7)
+            ax1.plot(bb_middle.index[-ultimos_dias:], bb_middle.iloc[-ultimos_dias:], 'g-', linewidth=1, label=f"Media ({_CFG_V2['bb_period']})", alpha=0.7)
             ax1.plot(bb_lower.index[-ultimos_dias:], bb_lower.iloc[-ultimos_dias:], 'r--', linewidth=1, label='Banda Inferior', alpha=0.7)
             
             ax1.fill_between(bb_upper.index[-ultimos_dias:], bb_lower.iloc[-ultimos_dias:], bb_upper.iloc[-ultimos_dias:], 
@@ -3325,9 +3372,9 @@ elif modo == "📊 Señales de Trading":
     st.markdown("### 📈 Gráfico con Bandas de Bollinger y RSI Wilder")
     
     close = hist['Close']
-    bb = calcular_bollinger_completo(close, period=30, n_std=2)
-    rsi_series = rsi_wilder(close, period=13)
-    sma200 = close.rolling(window=200).mean()
+    bb = calcular_bollinger_completo(close, period=_CFG_V2['bb_period'], n_std=_CFG_V2['bb_std'])
+    rsi_series = rsi_wilder(close, period=_CFG_V2['rsi_period'])
+    sma200 = close.rolling(window=_CFG_V2['sma_trend']).mean()
     
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
     
@@ -3336,7 +3383,7 @@ elif modo == "📊 Señales de Trading":
     # Subplot 1: Precio con Bandas de Bollinger
     ax1.plot(close.index[-ultimos_dias:], close.iloc[-ultimos_dias:], 'b-', linewidth=1.5, label='Precio')
     ax1.plot(bb['bb_up'].index[-ultimos_dias:], bb['bb_up'].iloc[-ultimos_dias:], 'r--', linewidth=1, label='Banda Superior', alpha=0.7)
-    ax1.plot(bb['bb_mid'].index[-ultimos_dias:], bb['bb_mid'].iloc[-ultimos_dias:], 'g-', linewidth=1, label='Media (30)', alpha=0.7)
+    ax1.plot(bb['bb_mid'].index[-ultimos_dias:], bb['bb_mid'].iloc[-ultimos_dias:], 'g-', linewidth=1, label=f"Media ({_CFG_V2['bb_period']})", alpha=0.7)
     ax1.plot(bb['bb_low'].index[-ultimos_dias:], bb['bb_low'].iloc[-ultimos_dias:], 'r--', linewidth=1, label='Banda Inferior', alpha=0.7)
     ax1.plot(sma200.index[-ultimos_dias:], sma200.iloc[-ultimos_dias:], 'purple', linewidth=1, label='SMA200', alpha=0.5)
     
@@ -3358,14 +3405,14 @@ elif modo == "📊 Señales de Trading":
     ax1.grid(True, alpha=0.3)
     
     # Subplot 2: RSI Wilder
-    ax2.plot(rsi_series.index[-ultimos_dias:], rsi_series.iloc[-ultimos_dias:], 'purple', linewidth=1.5, label='RSI Wilder(13)')
-    ax2.axhline(y=70, color='red', linestyle='--', alpha=0.7, label='Sobrecompra (70)')
-    ax2.axhline(y=30, color='green', linestyle='--', alpha=0.7, label='Sobreventa (30)')
+    ax2.plot(rsi_series.index[-ultimos_dias:], rsi_series.iloc[-ultimos_dias:], 'purple', linewidth=1.5, label=f"RSI Wilder({_CFG_V2['rsi_period']})")
+    ax2.axhline(y=_CFG_V2['rsi_overbought'], color='red', linestyle='--', alpha=0.7, label=f"Sobrecompra ({_CFG_V2['rsi_overbought']:.0f})")
+    ax2.axhline(y=_CFG_V2['rsi_oversold'], color='green', linestyle='--', alpha=0.7, label=f"Sobreventa ({_CFG_V2['rsi_oversold']:.0f})")
     ax2.axhline(y=50, color='gray', linestyle=':', alpha=0.5)
     ax2.fill_between(rsi_series.index[-ultimos_dias:], 30, 70, alpha=0.1, color='gray')
     ax2.scatter(rsi_series.index[-1], rsi_series.iloc[-1], color='purple', s=100, zorder=5)
     
-    ax2.set_title('RSI de Wilder (13)', fontsize=12)
+    ax2.set_title(f"RSI de Wilder ({_CFG_V2['rsi_period']})", fontsize=12)
     ax2.set_ylabel('RSI')
     ax2.set_ylim(0, 100)
     ax2.legend(loc='upper left')
@@ -3475,7 +3522,7 @@ elif modo == "🌍 Análisis por Región":
         """Analiza una acción y devuelve métricas resumidas incluyendo señales de trading."""
         try:
             stock = yf.Ticker(ticker)
-            hist = stock.history(period="1y")
+            hist = stock.history(period="2y")  # v2: SMA200 + percentiles 252
             
             if hist.empty or len(hist) < 50:
                 return None
@@ -3790,7 +3837,7 @@ elif modo == "🌍 Análisis por Región":
             with st.spinner(f"Cargando gráfico de {ticker_seleccionado}..."):
                 try:
                     stock = yf.Ticker(ticker_seleccionado)
-                    hist_detalle = stock.history(period="1y")
+                    hist_detalle = stock.history(period="2y")  # v2
                     
                     if not hist_detalle.empty and len(hist_detalle) >= 50:
                         # Análisis completo
@@ -3831,8 +3878,8 @@ elif modo == "🌍 Análisis por Región":
                         
                         # Gráfico con Bollinger y RSI
                         close = hist_detalle['Close']
-                        bb = calcular_bollinger_completo(close, period=30, n_std=2)
-                        rsi_series = rsi_wilder(close, period=13)
+                        bb = calcular_bollinger_completo(close, period=_CFG_V2['bb_period'], n_std=_CFG_V2['bb_std'])
+                        rsi_series = rsi_wilder(close, period=_CFG_V2['rsi_period'])
                         sma200 = close.rolling(window=200).mean()
                         
                         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), gridspec_kw={'height_ratios': [3, 1]})
@@ -4333,6 +4380,7 @@ elif modo == "📈 Comparador de Activos":
                 with st.spinner("Analizando acciones y optimizando cartera..."):
                     todas_acciones = []
                     precios_historicos = {}
+                    ohlc_historicos = {}   # puente táctico: necesita velas completas
                     errores = []
                     
                     progress_text = st.empty()
@@ -4345,7 +4393,7 @@ elif modo == "📈 Comparador de Activos":
                                 try:
                                     progress_text.text(f"Analizando {ticker}...")
                                     stock = yf.Ticker(ticker)
-                                    hist = stock.history(period="1y")
+                                    hist = stock.history(period="2y")  # v2
                                     
                                     if hist.empty or len(hist) < 50:
                                         errores.append(f"{ticker}: datos insuficientes")
@@ -4380,6 +4428,7 @@ elif modo == "📈 Comparador de Activos":
                                     
                                     # Guardar precios para Markowitz
                                     precios_historicos[ticker] = hist['Close']
+                                    ohlc_historicos[ticker] = hist   # puente táctico
                                     
                                 except Exception as e:
                                     errores.append(f"{ticker}: {str(e)[:30]}")
@@ -4397,8 +4446,23 @@ elif modo == "📈 Comparador de Activos":
                                 st.caption(err)
                     
                     # Ordenar por score y seleccionar top N
-                    todas_acciones.sort(key=lambda x: x['score'], reverse=True)
-                    top_acciones = todas_acciones[:n_acciones_final]
+                    _cfg_tac = st.session_state.get('cfg_tactico', {})
+                    _usar_puente = (MODULOS_V2 and PUENTE_V2
+                                    and _cfg_tac.get('_activo', True)
+                                    and bool(ohlc_historicos))
+
+                    if _usar_puente:
+                        _candidatos_base = list(todas_acciones)
+                        _estados_tac = calcular_estados(ohlc_historicos, _cfg_tac)
+                        st.session_state['estados_tacticos'] = _estados_tac
+                        todas_acciones = aplicar_score_tactico(
+                            todas_acciones, _estados_tac, _cfg_tac)
+                        top_acciones = todas_acciones[:n_acciones_final]
+                        panel_seleccion(_candidatos_base, todas_acciones, n_acciones_final)
+                    else:
+                        todas_acciones.sort(key=lambda x: x['score'], reverse=True)
+                        top_acciones = todas_acciones[:n_acciones_final]
+                        st.session_state['estados_tacticos'] = {}
                     
                     if len(top_acciones) >= 2:
                         # Crear DataFrame de precios para las acciones seleccionadas
@@ -4433,6 +4497,21 @@ elif modo == "📈 Comparador de Activos":
                                     
                                     # Mostrar resultados
                                     st.success(f"✅ Cartera optimizada con **{len(precios_df.columns)} acciones** | Sharpe: {sharpe:.2f} | Ret. esperado: {ret_esperado:.1f}% | Vol: {vol_esperada:.1f}%")
+
+                                    # ---------- PUENTE TÁCTICO: plan de entrada ----------
+                                    _estados = st.session_state.get('estados_tacticos', {})
+                                    if MODULOS_V2 and PUENTE_V2 and _estados:
+                                        _pesos_plan = {t: float(pesos_optimos[i])
+                                                       for i, t in enumerate(precios_df.columns)}
+                                        st.divider()
+                                        panel_plan_entrada(_pesos_plan, _estados, importe_rv,
+                                                           st.session_state.get('cfg_tactico', {}))
+                                        with st.expander("🔬 ¿El timing aporta valor? Validación histórica"):
+                                            panel_validacion(
+                                                {t: ohlc_historicos[t] for t in precios_df.columns
+                                                 if t in ohlc_historicos},
+                                                st.session_state.get('cfg_tactico', {}))
+                                        st.divider()
                                     
                                     col_tabla, col_grafico = st.columns([1, 1])
                                     
@@ -5145,6 +5224,25 @@ elif modo == "📊 Cartera (2+ activos)":
             ax.grid(True, alpha=0.3)
             ax.set_xlim(0, None)
             st.pyplot(fig)
+
+# ==================================================
+# MODO ESTRATEGIA V2 (RETORNO A LA MEDIA CON BACKTEST)
+# ==================================================
+elif modo == "🧪 Estrategia v2 (backtest)":
+    if not MODULOS_V2:
+        st.error(
+            "Faltan los módulos de la Estrategia v2. Sube a la raíz del repositorio: "
+            "`signals.py`, `backtest.py`, `adaptador_v1.py`, `estrategia_v2_ui.py`, "
+            "`seleccion_tactica.py` y `puente_ui.py`."
+        )
+        st.caption(f"Detalle del error: {_ERROR_V2}")
+    else:
+        try:
+            _universo = sorted({t for lista in REGIONES.values() for t in lista})
+        except Exception:
+            _universo = None
+        render_estrategia_v2(_universo)
+
 
 # --------------------------------------------------
 # FOOTER
