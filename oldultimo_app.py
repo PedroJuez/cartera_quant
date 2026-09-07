@@ -1575,57 +1575,8 @@ def score_fundamental(info):
     
     # Añadir indicador de calidad de datos
     detalles['_datos_disponibles'] = f"{indicadores_con_datos}/{total_indicadores}"
-    detalles['_cobertura'] = indicadores_con_datos / total_indicadores
     
     return score, detalles
-
-
-# ==================================================
-# PONDERACIÓN ADAPTATIVA SEGÚN COBERTURA DE DATOS
-# --------------------------------------------------
-# score_fundamental() suma "puntos neutrales" (la mitad del máximo) cuando
-# falta un dato. Con los seis indicadores ausentes el resultado es 49/100:
-# indistinguible de una empresa mediocre. Si además se pondera ese 49 al
-# 50%, media nota del valor sale de un marcador de posición.
-#
-# Estas funciones reducen el peso del fundamental en proporción a los datos
-# que realmente existen, y reparten el peso liberado entre técnico y régimen,
-# que sí tienen dato siempre (se calculan del precio).
-# ==================================================
-
-COBERTURA_MINIMA = 0.67   # a partir de 4 de 6 indicadores, peso completo
-
-
-def cobertura_fundamental(detalles_fund):
-    """Fracción 0-1 de indicadores fundamentales con dato real."""
-    if not isinstance(detalles_fund, dict):
-        return 1.0
-    if '_cobertura' in detalles_fund:
-        return float(detalles_fund['_cobertura'])
-    inds = [v for k, v in detalles_fund.items()
-            if not k.startswith('_') and isinstance(v, dict)]
-    if not inds:
-        return 0.0
-    return sum(1 for v in inds if v.get('valor') != 'N/A') / len(inds)
-
-
-def ajustar_pesos_por_cobertura(peso_fund, peso_tech, peso_reg, cobertura):
-    """
-    Devuelve (peso_fund, peso_tech, peso_reg, factor).
-    factor = 1 -> sin ajuste;  factor < 1 -> faltan datos fundamentales.
-    """
-    if peso_fund <= 0:
-        return peso_fund, peso_tech, peso_reg, 1.0
-    factor = min(1.0, max(0.0, cobertura) / COBERTURA_MINIMA)
-    nuevo_fund = peso_fund * factor
-    sobrante = peso_fund - nuevo_fund
-    base = peso_tech + peso_reg
-    if base > 0:
-        nuevo_tech = peso_tech + sobrante * peso_tech / base
-        nuevo_reg = peso_reg + sobrante * peso_reg / base
-    else:
-        nuevo_tech, nuevo_reg = peso_tech, peso_reg
-    return nuevo_fund, nuevo_tech, nuevo_reg, factor
 
 
 def score_tecnico(hist):
@@ -2441,24 +2392,28 @@ elif modo == "🌍 Análisis por Región":
     st.sidebar.subheader("⏱️ Horizonte de Inversión")
     horizonte_region = st.sidebar.radio(
         "Selecciona tu horizonte:",
-        ["📅 Corto plazo (trading)", "📈 Inversión (medio-largo plazo)"],
-        index=0,
-        help="Son dos decisiones distintas: abrir una operación de días, "
-             "o incorporar un valor a la cartera durante meses o años.",
+        ["📅 Corto plazo (trading)", "📆 Medio plazo (swing)", "📈 Largo plazo (inversión)"],
+        index=1,
+        help="El horizonte determina qué peso dar a cada tipo de análisis",
         key="horizonte_region"
     )
     
     # Ponderaciones según horizonte
     if horizonte_region == "📅 Corto plazo (trading)":
         peso_fund_region = 0.00
-        peso_tech_region = 0.80
-        peso_reg_region = 0.20
-        st.sidebar.caption("🎯 Téc 80% + Rég 20%")
-    else:  # Inversión (medio-largo plazo)
-        peso_fund_region = 0.60
-        peso_tech_region = 0.15
+        peso_tech_region = 0.90
+        peso_reg_region = 0.10
+        st.sidebar.caption("🎯 Téc 90% + Rég 10%")
+    elif horizonte_region == "📆 Medio plazo (swing)":
+        peso_fund_region = 0.30
+        peso_tech_region = 0.35
+        peso_reg_region = 0.35
+        st.sidebar.caption("⚖️ Téc 35% + Rég 35% + Fund 30%")
+    else:  # Largo plazo
+        peso_fund_region = 0.50
+        peso_tech_region = 0.25
         peso_reg_region = 0.25
-        st.sidebar.caption("📊 Fund 60% + Rég 25% + Téc 15%")
+        st.sidebar.caption("📊 Fund 50% + Téc 25% + Rég 25%")
     
     TICKERS = []  # No se usa en este modo
 else:
@@ -2511,39 +2466,35 @@ if modo == "🎯 Recomendación compra/venta":
     
     horizonte = st.sidebar.radio(
         "Selecciona tu horizonte:",
-        ["📅 Corto plazo (trading)", "📈 Inversión (medio-largo plazo)"],
-        index=0,
-        help="Son dos decisiones distintas: abrir una operación de días, "
-             "o incorporar un valor a la cartera durante meses o años."
+        ["📅 Corto plazo (trading)", "📆 Medio plazo (swing)", "📈 Largo plazo (inversión)"],
+        index=1,
+        help="El horizonte determina qué peso dar a cada tipo de análisis"
     )
     
     # Ponderaciones según horizonte
     if horizonte == "📅 Corto plazo (trading)":
         peso_fundamental = 0.00
-        peso_tecnico = 0.80
-        peso_regimen = 0.20
-        st.sidebar.caption("🎯 Téc 80% + Rég 20%")
-    else:  # Inversión (medio-largo plazo)
-        peso_fundamental = 0.60
-        peso_tecnico = 0.15
+        peso_tecnico = 0.90
+        peso_regimen = 0.10
+        st.sidebar.caption("🎯 Téc 90% + Rég 10%")
+    elif horizonte == "📆 Medio plazo (swing)":
+        peso_fundamental = 0.30
+        peso_tecnico = 0.35
+        peso_regimen = 0.35
+        st.sidebar.caption("⚖️ Téc 35% + Rég 35% + Fund 30%")
+    else:  # Largo plazo
+        peso_fundamental = 0.50
+        peso_tecnico = 0.25
         peso_regimen = 0.25
-        st.sidebar.caption("📊 Fund 60% + Rég 25% + Téc 15%")
+        st.sidebar.caption("📊 Fund 50% + Téc 25% + Rég 25%")
     
     st.sidebar.markdown("---")
     st.sidebar.markdown("**¿Cuál elegir?**")
     st.sidebar.markdown("""
-    - **Corto**: días o semanas. La decisión es si abrir
-      una operación. Los fundamentales no informan a este
-      plazo, así que pesan 0.
-    - **Inversión**: meses o años. La decisión es si el
-      valor entra en cartera. Mandan los fundamentales;
-      el timing de entrada lo aporta el puente táctico
-      del Comparador.
+    - **Corto**: Días/semanas. Trading activo.
+    - **Medio**: Semanas/meses. Swing trading.
+    - **Largo**: Meses/años. Inversión valor.
     """)
-    st.sidebar.caption(
-        "El peso del fundamental se reduce solo si al valor le faltan "
-        "indicadores con dato."
-    )
 
 if modo == "📊 Cartera (2+ activos)":
     st.sidebar.subheader("💰 Inversión")
@@ -2940,22 +2891,7 @@ elif modo == "🎯 Recomendación compra/venta":
                 s_regimen, detalles_regimen = score_regimen_combinado(hmm_result, garch_result)
     
     # Generar recomendación (con o sin HMM/GARCH)
-    # Ajuste por cobertura de datos fundamentales
-    _cob = cobertura_fundamental(detalles_fund)
-    _pf, _pt, _pr, _factor = ajustar_pesos_por_cobertura(
-        peso_fundamental, peso_tecnico, peso_regimen, _cob)
-
-    rec = generar_recomendacion(s_fund, s_tech, s_regimen, _pf, _pt, _pr)
-
-    if _factor < 1.0:
-        st.warning(
-            f"⚠️ Solo hay {detalles_fund.get('_datos_disponibles', '?')} indicadores "
-            f"fundamentales con dato para este valor. El peso del score fundamental "
-            f"se ha reducido de {peso_fundamental*100:.0f}% a {_pf*100:.0f}% y el resto "
-            f"se ha repartido entre técnico ({_pt*100:.0f}%) y régimen ({_pr*100:.0f}%). "
-            f"Un fundamental de {s_fund:.0f}/100 con pocos datos no significa "
-            f"«empresa del montón»: significa «no se sabe»."
-        )
+    rec = generar_recomendacion(s_fund, s_tech, s_regimen, peso_fundamental, peso_tecnico, peso_regimen)
     
     # --- HEADER ---
     st.markdown(f"## {info.get('longName', ticker)}")
@@ -2970,10 +2906,13 @@ elif modo == "🎯 Recomendación compra/venta":
         # Texto de ponderación según horizonte seleccionado
         if horizonte == "📅 Corto plazo (trading)":
             horizonte_texto = "📅 Corto plazo"
-            ponderacion_texto = f"Téc {int(_pt*100)}% + Rég {int(_pr*100)}%"
-        else:  # Inversión (medio-largo plazo)
-            horizonte_texto = "📈 Inversión"
-            ponderacion_texto = f"Fund {int(_pf*100)}% + Rég {int(_pr*100)}% + Téc {int(_pt*100)}%"
+            ponderacion_texto = f"Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}%"
+        elif horizonte == "📆 Medio plazo (swing)":
+            horizonte_texto = "📆 Medio plazo"
+            ponderacion_texto = f"Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}% + Fund {int(peso_fundamental*100)}%"
+        else:  # Largo plazo
+            horizonte_texto = "📈 Largo plazo"
+            ponderacion_texto = f"Fund {int(peso_fundamental*100)}% + Téc {int(peso_tecnico*100)}% + Rég {int(peso_regimen*100)}%"
         
         st.markdown(f"""
         <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 15px; border: 2px solid {'#00ff88' if rec['color'] == '🟢' else '#ffaa00' if rec['color'] == '🟡' else '#ff4444'};">
@@ -3567,13 +3506,11 @@ elif modo == "🌍 Análisis por Región":
     
     # Mostrar horizonte seleccionado
     if horizonte_region == "📅 Corto plazo (trading)":
-        st.info(f"📅 **Horizonte: Corto plazo (trading)** | Ponderación: "
-                f"Téc {int(peso_tech_region*100)}% + Rég {int(peso_reg_region*100)}%")
+        st.info(f"📅 **Horizonte: Corto plazo** | Ponderación: Téc {int(peso_tech_region*100)}% + Rég {int(peso_reg_region*100)}% + Fund {int(peso_fund_region*100)}%")
+    elif horizonte_region == "📆 Medio plazo (swing)":
+        st.info(f"📆 **Horizonte: Medio plazo** | Ponderación: Téc {int(peso_tech_region*100)}% + Rég {int(peso_reg_region*100)}% + Fund {int(peso_fund_region*100)}%")
     else:
-        st.info(f"📈 **Horizonte: Inversión (medio-largo plazo)** | Ponderación base: "
-                f"Fund {int(peso_fund_region*100)}% + Rég {int(peso_reg_region*100)}% + "
-                f"Téc {int(peso_tech_region*100)}% · se ajusta por valor según los "
-                f"indicadores fundamentales disponibles")
+        st.info(f"📈 **Horizonte: Largo plazo** | Ponderación: Fund {int(peso_fund_region*100)}% + Téc {int(peso_tech_region*100)}% + Rég {int(peso_reg_region*100)}%")
     
     if not regiones_seleccionadas:
         st.warning("Selecciona al menos una región en el panel lateral.")
@@ -3603,7 +3540,7 @@ elif modo == "🌍 Análisis por Región":
                 currency = 'USD'
             
             # Calcular scores (ya usa las funciones mejoradas)
-            s_fund, _det_fund = score_fundamental(info)
+            s_fund, _ = score_fundamental(info)
             s_tech, detalles_tech = score_tecnico(hist)
             
             # Indicadores de trading adicionales
@@ -3632,16 +3569,13 @@ elif modo == "🌍 Análisis por Región":
             if hmm_res or garch_res:
                 s_regimen, _ = score_regimen_combinado(hmm_res, garch_res)
                 # Usar pesos dinámicos según horizonte
-                _pf, _pt, _pr, _ = ajustar_pesos_por_cobertura(
-                    peso_fund, peso_tech, peso_reg, cobertura_fundamental(_det_fund))
-                score_total = s_fund * _pf + s_tech * _pt + s_regimen * _pr
+                score_total = s_fund * peso_fund + s_tech * peso_tech + s_regimen * peso_reg
             else:
                 s_regimen = None
                 # Sin régimen, ajustar pesos entre fundamental y técnico
-                _pf, _pt, _, _ = ajustar_pesos_por_cobertura(
-                    peso_fund, peso_tech, 0.0, cobertura_fundamental(_det_fund))
-                _base = _pf + _pt
-                score_total = (s_fund * _pf / _base + s_tech * _pt / _base) if _base > 0 else s_tech
+                peso_fund_adj = peso_fund / (peso_fund + peso_tech)
+                peso_tech_adj = peso_tech / (peso_fund + peso_tech)
+                score_total = s_fund * peso_fund_adj + s_tech * peso_tech_adj
             
             # Régimen HMM
             if hmm_res:
@@ -4410,20 +4344,16 @@ elif modo == "📈 Comparador de Activos":
         
         # Determinar pesos según plazo para análisis de renta variable
         if plazo == "Corto plazo":
-            # Aquí "Corto plazo" significa 1-2 AÑOS, no trading: los tres
-            # casos son horizontes de inversión, así que los tres usan la
-            # ponderación de inversión. El plazo ya cumple su función en el
-            # reparto entre renta variable, renta fija, oro y liquidez.
-            peso_fund_calc = 0.60
-            peso_tech_calc = 0.15
-            peso_reg_calc = 0.25
+            peso_fund_calc = 0.00
+            peso_tech_calc = 0.90
+            peso_reg_calc = 0.10
         elif plazo == "Medio plazo":
-            peso_fund_calc = 0.60
-            peso_tech_calc = 0.15
-            peso_reg_calc = 0.25
+            peso_fund_calc = 0.30
+            peso_tech_calc = 0.35
+            peso_reg_calc = 0.35
         else:  # Largo plazo
-            peso_fund_calc = 0.60
-            peso_tech_calc = 0.15
+            peso_fund_calc = 0.50
+            peso_tech_calc = 0.25
             peso_reg_calc = 0.25
         
         # Crear tabs para cada categoría
@@ -4474,15 +4404,12 @@ elif modo == "📈 Comparador de Activos":
                                     precio = hist['Close'].iloc[-1]
                                     
                                     # Calcular scores (simplificado para velocidad)
-                                    s_fund, _det_fund = score_fundamental(info)
+                                    s_fund, _ = score_fundamental(info)
                                     s_tech, _ = score_tecnico(hist)
                                     
                                     # Score combinado según plazo (sin HMM/GARCH para velocidad)
                                     s_regimen = 50  # Neutral si no hay HMM/GARCH
-                                    _pf, _pt, _pr, _ = ajustar_pesos_por_cobertura(
-                                        peso_fund_calc, peso_tech_calc, peso_reg_calc,
-                                        cobertura_fundamental(_det_fund))
-                                    score_total = s_fund * _pf + s_tech * _pt + s_regimen * _pr
+                                    score_total = s_fund * peso_fund_calc + s_tech * peso_tech_calc + s_regimen * peso_reg_calc
                                     
                                     # Señal de trading
                                     resultado_rm = analizar_retorno_media_completo(hist)

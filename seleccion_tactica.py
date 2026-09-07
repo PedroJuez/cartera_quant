@@ -37,6 +37,37 @@ import pandas as pd
 
 from signals import CONFIG_V2, generar_senales, normalizar_ohlc
 
+# ======================================================================
+# CONFIGURACIÓN DE SEÑALES PARA HORIZONTE DE CARTERA
+# ----------------------------------------------------------------------
+# NO se usa CONFIG_V2 aquí, y es deliberado.
+#
+# CONFIG_V2 está calibrada para operaciones de ~10 días: Bollinger de 30
+# sesiones, RSI de 13. Esa ventana responde a la pregunta "¿está barato
+# respecto a las últimas seis semanas?", que es la correcta para un trade
+# corto y la EQUIVOCADA para una posición que se va a mantener meses.
+#
+# Para el puente se usan ventanas más lentas, coherentes con el horizonte
+# de una cartera de Markowitz:
+#   - Bollinger(55) ~ tres meses de referencia
+#   - RSI(21)       ~ un mes
+#   - SIN filtro de régimen de volatilidad: la prima de liquidez de Nagel
+#     es un fenómeno de días; aplicarla a una decisión a seis meses no
+#     tiene fundamento y solo bloquearía entradas de forma arbitraria.
+# ======================================================================
+
+CONFIG_SENALES_CARTERA = {
+    'bb_period': 55,
+    'bb_std': 2.0,
+    'rsi_period': 21,
+    'rsi_oversold': 35.0,
+    'rsi_overbought': 65.0,
+    'sma_trend': 200,
+    'usar_filtro_vol': False,
+    'max_range_atr': 4.0,
+    'min_bandwidth_pct': 0.0,
+}
+
 CONFIG_TACTICO = {
     # --- Selección ---
     'peso_timing': 0.20,          # cuánto pesa el timing frente al score de calidad
@@ -67,7 +98,7 @@ def estado_tactico(df: pd.DataFrame, cfg_senales: dict | None = None,
     timing 0-100 (100 = momento inmejorable para entrar largo).
     """
     c = {**CONFIG_TACTICO, **(cfg or {})}
-    cs = {**CONFIG_V2, **(cfg_senales or {})}
+    cs = {**CONFIG_V2, **CONFIG_SENALES_CARTERA, **(cfg_senales or {})}
 
     vacio = {
         'senal': 'NEUTRAL', 'pct_b': 50.0, 'rsi': 50.0, 'tendencia': 'neutral',
@@ -349,7 +380,7 @@ def backtest_timing(df: pd.DataFrame, cfg_senales: dict | None = None,
     ser simplemente que estás comprando activos que siguen cayendo.
     """
     c = {**CONFIG_TACTICO, **(cfg or {})}
-    cs = {**CONFIG_V2, **(cfg_senales or {})}
+    cs = {**CONFIG_V2, **CONFIG_SENALES_CARTERA, **(cfg_senales or {})}
     d = normalizar_ohlc(df)
     if len(d) < max(cs['sma_trend'], 300) + horizonte_fwd:
         return {'n': 0, 'error': 'Histórico insuficiente'}
