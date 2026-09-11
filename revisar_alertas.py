@@ -48,18 +48,20 @@ def main():
     r = A.revisar(cfg, enviar=not args.simular, path_estado=args.estado)
 
     for e in r["evaluados"]:
-        print(f"  {e['ticker']:<12} {e['senal']:<8} "
-              f"precio {e['precio']:>10,.2f}  RSI {e['rsi']:>5.1f}  %B {e['pct_b']:>6.1f}")
+        print(f"  {e['ticker']:<12} {e['estado']:<9} "
+              f"precio {e['precio']:>10,.2f}  RSI {e['rsi']:>5.1f}  "
+              f"%B {e['pct_b']:>6.1f}  ({e['dias_en_estado']} sesiones)")
 
     for err in r["errores"]:
         print(f"  ! {err}", file=sys.stderr)
 
     if r["alertas"]:
-        print(f"\n{len(r['alertas'])} señal(es) nueva(s):")
+        print(f"\n{len(r['alertas'])} cambio(s) de estado:")
         for a in r["alertas"]:
-            print(f"  -> {a['ticker']}: {a['senal']} a {a['precio']:,.2f}")
+            print(f"  -> {a['ticker']}: {a['evento']} a {a['precio']:,.2f} "
+                  f"({a['motivo']})")
     else:
-        print("\nSin señales nuevas.")
+        print("\nSin cambios de estado.")
 
     fallos = [e for e in r["envios"] if not e["ok"]]
     if r["envios"]:
