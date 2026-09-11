@@ -1,5 +1,10 @@
 {
-  "destinatarios": [],
+  "destinatarios": [
+    {
+      "alias": "pj",
+      "chat_id": "332576585"
+    }
+  ],
   "valores": [
     {
       "ticker": "SAN.MC",
