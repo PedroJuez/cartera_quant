@@ -91,6 +91,26 @@ def _cfg():
     return st.session_state["alertas_cfg"]
 
 
+def _publicar_manual(cfg: dict):
+    """Descarga del JSON, para cuando no hay guardado automático."""
+    texto = json.dumps(cfg, indent=2, ensure_ascii=False)
+    st.code(texto, language="json")
+
+    c1, c2 = st.columns(2)
+    c1.download_button("⬇️ Descargar alertas_config.json", texto.encode("utf-8"),
+                       "alertas_config.json", "application/json", width='stretch')
+    if c2.button("💾 Guardar en disco (solo en local)", width='stretch'):
+        if A.guardar_config(cfg):
+            st.success(f"Guardado en `{A.FICHERO_CONFIG}`")
+        else:
+            st.error("No se pudo escribir el fichero.")
+
+    st.markdown(
+        "**Pasos:** descarga el fichero, colócalo en `data/alertas_config.json` "
+        "del repositorio, y haz commit."
+    )
+
+
 def render_alertas():
     st.title("🔔 Alertas de compra y venta por Telegram")
 
@@ -292,29 +312,39 @@ def render_alertas():
     # =========================================================== PUBLICAR
     with t4:
         st.markdown("#### Publicar la configuración")
+
+        if A.github_configurado():
+            st.success("**Guardado automático activado.** Pulsa el botón y la "
+                       "configuración se escribe directamente en el repositorio. "
+                       "No hay que descargar ni subir nada.")
+            c1, c2 = st.columns([1, 2])
+            if c1.button("🚀 Guardar en GitHub", type="primary", width='stretch'):
+                with st.spinner("Escribiendo en el repositorio…"):
+                    ok, det = A.guardar_config_en_github(cfg)
+                if ok:
+                    st.success(f"✅ {det}")
+                    st.caption("El robot usará esta configuración en su próxima "
+                               "ejecución (18:00 y 23:30, de lunes a viernes).")
+                else:
+                    st.error(f"No se pudo guardar: {det}")
+            st.divider()
+            with st.expander("Alternativa manual (por si falla el guardado)"):
+                _publicar_manual(cfg)
+            return
+
         st.warning(
             "**Streamlit Cloud no guarda cambios en el disco.** Lo que edites aquí "
-            "se pierde al reiniciarse la app. Para que las alertas automáticas usen "
-            "esta configuración, hay que subir el fichero al repositorio."
+            "se pierde al reiniciarse la app, así que hay que subir el fichero al "
+            "repositorio a mano."
+        )
+        st.info(
+            "**Puedes automatizarlo.** Crea un token de GitHub con permiso de "
+            "escritura sobre este repositorio y añádelo a los secrets de Streamlit:\n\n"
+            "```\nGITHUB_TOKEN = \"github_pat_...\"\nGITHUB_REPO = \"usuario/repositorio\"\n```\n\n"
+            "Con eso aparecerá aquí un botón que guarda sin descargar nada."
         )
 
-        texto = json.dumps(cfg, indent=2, ensure_ascii=False)
-        st.code(texto, language="json")
-
-        c1, c2 = st.columns(2)
-        c1.download_button("⬇️ Descargar alertas_config.json", texto.encode("utf-8"),
-                           "alertas_config.json", "application/json", width='stretch')
-        if c2.button("💾 Guardar en disco (solo en local)", width='stretch'):
-            if A.guardar_config(cfg):
-                st.success(f"Guardado en `{A.FICHERO_CONFIG}`")
-            else:
-                st.error("No se pudo escribir el fichero.")
-
-        st.markdown(
-            "**Pasos:** descarga el fichero, colócalo en `data/alertas_config.json` "
-            "del repositorio, y haz commit. La acción programada de GitHub lo leerá "
-            "en la siguiente ejecución."
-        )
+        _publicar_manual(cfg)
 
     st.divider()
     if st.button("🔒 Cerrar sesión del panel"):

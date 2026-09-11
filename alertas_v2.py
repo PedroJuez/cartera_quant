@@ -478,3 +478,90 @@ def revisar(config: dict | None = None, enviar: bool = True,
 
     guardar_estado(estado, path_estado)
     return resumen
+
+
+# ======================================================================
+# GUARDADO DIRECTO EN GITHUB
+# ======================================================================
+#
+# Streamlit Cloud no conserva cambios en disco, así que la configuración
+# editada en la app se perdería al reiniciarse. En vez de descargar el
+# fichero y subirlo a mano, estas funciones lo escriben en el repositorio
+# a través de la API de GitHub. Necesitan un token con permiso de escritura
+# guardado en los secrets como GITHUB_TOKEN, y el repositorio en GITHUB_REPO
+# con el formato "usuario/repositorio".
+# ======================================================================
+
+API_GH = "https://api.github.com/repos/{repo}/contents/{path}"
+
+
+def _ajuste_gh(nombre: str) -> str | None:
+    v = os.environ.get(nombre)
+    if v:
+        return v.strip()
+    try:
+        import streamlit as st
+        if nombre in st.secrets:
+            return str(st.secrets[nombre]).strip()
+    except Exception:
+        pass
+    return None
+
+
+def github_configurado() -> bool:
+    return bool(_ajuste_gh("GITHUB_TOKEN") and _ajuste_gh("GITHUB_REPO"))
+
+
+def guardar_config_en_github(cfg: dict, ruta: str = "data/alertas_config.json",
+                             rama: str = "main") -> tuple[bool, str]:
+    """
+    Escribe la configuración en el repositorio. Devuelve (ok, mensaje).
+    Lee primero el sha del fichero existente, porque GitHub lo exige para
+    sobrescribir y así evita pisar un cambio hecho por otra vía.
+    """
+    import base64
+
+    token = _ajuste_gh("GITHUB_TOKEN")
+    repo = _ajuste_gh("GITHUB_REPO")
+    if not token or not repo:
+        return False, ("Falta GITHUB_TOKEN o GITHUB_REPO en los secrets.")
+
+    url = API_GH.format(repo=repo, path=ruta)
+    cab = {"Authorization": f"Bearer {token}",
+           "Accept": "application/vnd.github+json"}
+
+    sha = None
+    try:
+        r = requests.get(url, headers=cab, params={"ref": rama}, timeout=TIMEOUT)
+        if r.status_code == 200:
+            sha = r.json().get("sha")
+        elif r.status_code == 401:
+            return False, "Token de GitHub no válido o caducado."
+        elif r.status_code == 404 and "Not Found" in r.text and "/repos/" in r.text:
+            pass  # el fichero aún no existe: se creará
+    except Exception as e:
+        return False, f"No se pudo consultar el repositorio: {e}"
+
+    contenido = json.dumps(cfg, indent=2, ensure_ascii=False)
+    cuerpo = {
+        "message": f"Actualizar configuración de alertas ({len(cfg.get('valores', []))} "
+                   f"valores, {len(cfg.get('destinatarios', []))} destinatarios)",
+        "content": base64.b64encode(contenido.encode("utf-8")).decode("ascii"),
+        "branch": rama,
+    }
+    if sha:
+        cuerpo["sha"] = sha
+
+    try:
+        r = requests.put(url, headers=cab, json=cuerpo, timeout=TIMEOUT)
+        if r.status_code in (200, 201):
+            commit = r.json().get("commit", {}).get("sha", "")[:7]
+            return True, f"Guardado en {repo} ({commit})"
+        if r.status_code == 403:
+            return False, ("El token no tiene permiso de escritura sobre el "
+                           "repositorio (necesita Contents: Read and write).")
+        if r.status_code == 409:
+            return False, "Conflicto: el fichero ha cambiado. Vuelve a intentarlo."
+        return False, f"Error {r.status_code}: {r.json().get('message', r.text[:120])}"
+    except Exception as e:
+        return False, f"No se pudo escribir: {e}"
