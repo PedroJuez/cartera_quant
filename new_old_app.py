@@ -26,7 +26,6 @@ try:
     from seleccion_tactica import aplicar_score_tactico
     from puente_ui import (panel_config_tactico, calcular_estados, panel_seleccion,
                            panel_plan_entrada, panel_rebalanceo, panel_validacion)
-    from alertas_ui import render_alertas
     MODULOS_V2 = True
     _ERROR_V2 = ""
 except Exception as _e:
@@ -1596,11 +1595,6 @@ def score_fundamental(info):
 
 COBERTURA_MINIMA = 0.67   # a partir de 4 de 6 indicadores, peso completo
 
-# Pesos a los que converge el sistema cuando NO hay ningún fundamental:
-# los mismos que se usan en corto plazo. Si no se puede analizar la empresa,
-# se la analiza como se analizaría una operación: por precio y por régimen.
-PESOS_SIN_FUNDAMENTALES = (0.80, 0.20)   # (técnico, régimen)
-
 
 def cobertura_fundamental(detalles_fund):
     """Fracción 0-1 de indicadores fundamentales con dato real."""
@@ -1623,12 +1617,14 @@ def ajustar_pesos_por_cobertura(peso_fund, peso_tech, peso_reg, cobertura):
     if peso_fund <= 0:
         return peso_fund, peso_tech, peso_reg, 1.0
     factor = min(1.0, max(0.0, cobertura) / COBERTURA_MINIMA)
-    t_corto, r_corto = PESOS_SIN_FUNDAMENTALES
-    # Interpolación entre los pesos de inversión (factor=1) y los de corto
-    # plazo (factor=0). La suma siempre es 1.
     nuevo_fund = peso_fund * factor
-    nuevo_tech = peso_tech * factor + t_corto * (1 - factor)
-    nuevo_reg = peso_reg * factor + r_corto * (1 - factor)
+    sobrante = peso_fund - nuevo_fund
+    base = peso_tech + peso_reg
+    if base > 0:
+        nuevo_tech = peso_tech + sobrante * peso_tech / base
+        nuevo_reg = peso_reg + sobrante * peso_reg / base
+    else:
+        nuevo_tech, nuevo_reg = peso_tech, peso_reg
     return nuevo_fund, nuevo_tech, nuevo_reg, factor
 
 
@@ -2370,7 +2366,7 @@ if 'modo_analisis' not in st.session_state:
 
 modo = st.sidebar.radio(
     "¿Qué quieres analizar?",
-    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "📊 Señales de Trading", "🌍 Análisis por Región", "📈 Comparador de Activos", "📊 Cartera (2+ activos)", "🧪 Estrategia v2 (backtest)", "🔔 Alertas Telegram"],
+    ["🔍 Acción individual", "🎯 Recomendación compra/venta", "📊 Señales de Trading", "🌍 Análisis por Región", "📈 Comparador de Activos", "📊 Cartera (2+ activos)", "🧪 Estrategia v2 (backtest)"],
     key="modo_analisis"
 )
 
@@ -2958,8 +2954,7 @@ elif modo == "🎯 Recomendación compra/venta":
             f"se ha reducido de {peso_fundamental*100:.0f}% a {_pf*100:.0f}% y el resto "
             f"se ha repartido entre técnico ({_pt*100:.0f}%) y régimen ({_pr*100:.0f}%). "
             f"Un fundamental de {s_fund:.0f}/100 con pocos datos no significa "
-            f"«empresa del montón»: significa «no se sabe». Cuantos menos datos "
-            f"hay, más se acerca la valoración a la de corto plazo (Téc 80% + Rég 20%)."
+            f"«empresa del montón»: significa «no se sabe»."
         )
     
     # --- HEADER ---
@@ -5320,18 +5315,6 @@ elif modo == "🧪 Estrategia v2 (backtest)":
         except Exception:
             _universo = None
         render_estrategia_v2(_universo)
-
-
-# ==================================================
-# MODO ALERTAS DE TELEGRAM
-# ==================================================
-elif modo == "🔔 Alertas Telegram":
-    if not MODULOS_V2:
-        st.error("Faltan los módulos de la Estrategia v2. Sube `alertas_v2.py` y "
-                 "`alertas_ui.py` junto al resto a la raíz del repositorio.")
-        st.caption(f"Detalle del error: {_ERROR_V2}")
-    else:
-        render_alertas()
 
 
 # --------------------------------------------------

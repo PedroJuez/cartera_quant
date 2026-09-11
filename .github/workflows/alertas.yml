@@ -1,0 +1,40 @@
+name: Alertas de trading
+
+# Se ejecuta de lunes a viernes tras el cierre de los mercados.
+# Las horas son UTC: 16:00 UTC = 18:00 en España (horario de verano),
+# 21:30 UTC = 23:30 en España, tras el cierre de Wall Street.
+on:
+  schedule:
+    - cron: '0 16 * * 1-5'    # cierre europeo
+    - cron: '30 21 * * 1-5'   # cierre estadounidense
+  workflow_dispatch:           # permite lanzarlo a mano desde la pestaña Actions
+
+permissions:
+  contents: write              # necesario para guardar el fichero de estado
+
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias
+        run: pip install pandas numpy scipy yfinance requests
+
+      - name: Revisar señales y enviar alertas
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python revisar_alertas.py
+
+      - name: Guardar el estado
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/alertas_estado.json
+          git diff --staged --quiet || git commit -m "Estado de alertas [skip ci]"
+          git push
