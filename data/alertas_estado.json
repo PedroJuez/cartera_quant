@@ -1,0 +1,26 @@
+{
+  "SAN.MC": {
+    "estado": "MANTENER",
+    "fecha": "2026-09-11",
+    "precio": 12.824000358581543,
+    "dias_en_estado": 511
+  },
+  "BBVA.MC": {
+    "estado": "MANTENER",
+    "fecha": "2026-09-11",
+    "precio": 25.229999542236328,
+    "dias_en_estado": 510
+  },
+  "ITX.MC": {
+    "estado": "MANTENER",
+    "fecha": "2026-09-11",
+    "precio": 54.36000061035156,
+    "dias_en_estado": 510
+  },
+  "AAPL": {
+    "estado": "MANTENER",
+    "fecha": "2026-09-10",
+    "precio": 326.57000732421875,
+    "dias_en_estado": 83
+  }
+}
