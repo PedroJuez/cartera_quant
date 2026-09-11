@@ -1,8 +1,33 @@
 {
   "destinatarios": [],
-  "valores": [],
+  "valores": [
+    {
+      "ticker": "SAN.MC",
+      "compra": true,
+      "venta": true
+    },
+    {
+      "ticker": "BBVA.MC",
+      "compra": true,
+      "venta": true
+    },
+    {
+      "ticker": "ITX.MC",
+      "compra": true,
+      "venta": true
+    },
+    {
+      "ticker": "AAPL",
+      "compra": true,
+      "venta": true
+    }
+  ],
   "parametros": {
-    "permitir_short": true
+    "permitir_short": true,
+    "rsi_oversold": 30.0,
+    "rsi_overbought": 70.0,
+    "min_rr": 1.5,
+    "usar_filtro_vol": true
   },
   "periodo": "2y"
 }
