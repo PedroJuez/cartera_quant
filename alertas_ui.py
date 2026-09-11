@@ -10,13 +10,79 @@ Autor: Pedro Juez Martel
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 
 import pandas as pd
 import streamlit as st
 
 import alertas_v2 as A
 from signals import CONFIG_V2
+
+
+# ======================================================================
+# ACCESO RESTRINGIDO
+# ======================================================================
+#
+# La app es pública, pero este panel no debe serlo: muestra los chat_id de
+# los destinatarios, permite añadir gente y permite enviar mensajes al
+# Telegram de quien esté dado de alta.
+#
+# La contraseña se guarda en los secrets de Streamlit (ALERTAS_PASSWORD).
+# Si no está configurada, el panel queda cerrado: es preferible bloquear el
+# acceso a dejarlo abierto por un descuido de configuración.
+# ======================================================================
+
+def _password_configurada() -> str | None:
+    v = os.environ.get("ALERTAS_PASSWORD")
+    if v:
+        return v
+    try:
+        if "ALERTAS_PASSWORD" in st.secrets:
+            return str(st.secrets["ALERTAS_PASSWORD"])
+    except Exception:
+        pass
+    return None
+
+
+def _acceso_permitido() -> bool:
+    """Puerta de entrada al panel. Devuelve True solo si la clave es correcta."""
+    if st.session_state.get("alertas_autorizado"):
+        return True
+
+    clave = _password_configurada()
+    if not clave:
+        st.error(
+            "**Panel cerrado.** No hay contraseña configurada, así que el acceso "
+            "queda bloqueado por seguridad."
+        )
+        st.markdown(
+            "Para abrirlo, añade la contraseña en *Manage app → Settings → Secrets*:\n\n"
+            "```\nALERTAS_PASSWORD = \"la_que_tú_elijas\"\n```"
+        )
+        return False
+
+    st.markdown("### 🔒 Panel privado")
+    st.caption("Esta sección gestiona destinatarios y puede enviar mensajes a su "
+               "Telegram, así que no es pública.")
+
+    intro = st.text_input("Contraseña", type="password", key="alertas_pwd_input")
+    col1, _ = st.columns([1, 3])
+    if col1.button("Entrar", type="primary"):
+        if intro and hmac.compare_digest(intro, clave):
+            st.session_state["alertas_autorizado"] = True
+            st.session_state["alertas_intentos"] = 0
+            st.rerun()
+        else:
+            n = st.session_state.get("alertas_intentos", 0) + 1
+            st.session_state["alertas_intentos"] = n
+            st.error(f"Contraseña incorrecta. Intento {n}.")
+            if n >= 5:
+                st.warning("Demasiados intentos fallidos. Recarga la página para "
+                           "volver a probar.")
+                st.stop()
+    return False
 
 
 def _cfg():
@@ -27,6 +93,10 @@ def _cfg():
 
 def render_alertas():
     st.title("🔔 Alertas de compra y venta por Telegram")
+
+    if not _acceso_permitido():
+        return
+
     st.caption("Cada valor está en COMPRA, VENTA o MANTENER según la estrategia de "
                "bandas y RSI. El aviso llega en el momento del cambio, indicando la "
                "operación a realizar. Pasar a MANTENER no genera mensaje por sí solo.")
@@ -245,3 +315,8 @@ def render_alertas():
             "del repositorio, y haz commit. La acción programada de GitHub lo leerá "
             "en la siguiente ejecución."
         )
+
+    st.divider()
+    if st.button("🔒 Cerrar sesión del panel"):
+        st.session_state["alertas_autorizado"] = False
+        st.rerun()
