@@ -22,5 +22,11 @@
     "fecha": "2026-09-11",
     "precio": 332.2699890136719,
     "dias_en_estado": 84
+  },
+  "EFA": {
+    "estado": "MANTENER",
+    "fecha": "2026-09-14",
+    "precio": 105.83000183105469,
+    "dias_en_estado": 500
   }
 }
