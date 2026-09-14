@@ -7,24 +7,11 @@
   ],
   "valores": [
     {
-      "ticker": "SAN.MC",
+      "ticker": "EFA",
       "compra": true,
-      "venta": true
-    },
-    {
-      "ticker": "BBVA.MC",
-      "compra": true,
-      "venta": true
-    },
-    {
-      "ticker": "ITX.MC",
-      "compra": true,
-      "venta": true
-    },
-    {
-      "ticker": "AAPL",
-      "compra": true,
-      "venta": true
+      "venta": true,
+      "activo": true,
+      "destinatarios": []
     }
   ],
   "parametros": {
