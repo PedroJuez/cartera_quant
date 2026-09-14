@@ -91,6 +91,60 @@ def _cfg():
     return st.session_state["alertas_cfg"]
 
 
+def _panel_resumen(cfg: dict):
+    """Qué está vigilado ahora mismo y quién recibe cada aviso."""
+    st.markdown("#### Alertas activas")
+
+    valores = [A.normalizar_valor(v) for v in cfg.get("valores", [])]
+    dests = cfg.get("destinatarios", [])
+    activos = [v for v in valores if v["activo"]]
+    pausados = [v for v in valores if not v["activo"]]
+
+    c = st.columns(3)
+    c[0].metric("Valores vigilados", len(activos))
+    c[1].metric("En pausa", len(pausados))
+    c[2].metric("Destinatarios", len(dests))
+
+    if not valores:
+        st.info("No hay ningún valor dado de alta. Añádelos en la pestaña Valores.")
+        return
+    if not dests:
+        st.error("No hay destinatarios: aunque haya señales, no se enviará nada.")
+
+    filas = []
+    for v in valores:
+        quien = A.destinatarios_de(v, cfg)
+        avisos = []
+        if v["compra"]:
+            avisos.append("compra")
+        if v["venta"]:
+            avisos.append("venta")
+        filas.append({
+            "Ticker": v["ticker"],
+            "Estado": "🟢 activa" if v["activo"] else "⏸️ en pausa",
+            "Avisa de": " y ".join(avisos) if avisos else "— nada —",
+            "Recibe": ", ".join(d.get("alias", d["chat_id"]) for d in quien) or "— nadie —",
+        })
+    st.dataframe(pd.DataFrame(filas), width='stretch', hide_index=True)
+
+    problemas = [f for f in filas if f["Avisa de"] == "— nada —" or f["Recibe"] == "— nadie —"]
+    if problemas:
+        st.warning(
+            f"{len(problemas)} valor(es) no enviarán nada: o no tienen marcado "
+            "ni compra ni venta, o no tienen destinatario asignado."
+        )
+
+    st.caption("Para desactivar una alerta sin borrarla, desmarca su casilla "
+               "«Activa» en la pestaña Valores. Para eliminarla del todo, usa "
+               "el borrado que hay debajo de la tabla.")
+
+    estado = A.cargar_estado()
+    if estado:
+        with st.expander("Último estado registrado de cada valor"):
+            st.dataframe(pd.DataFrame(estado).T.reset_index().rename(
+                columns={"index": "ticker"}), width='stretch', hide_index=True)
+
+
 def _publicar_manual(cfg: dict):
     """Descarga del JSON, para cuando no hay guardado automático."""
     texto = json.dumps(cfg, indent=2, ensure_ascii=False)
@@ -139,7 +193,13 @@ def render_alertas():
         else:
             st.error(f"El token no funciona: {det}")
 
-    t1, t2, t3, t4 = st.tabs(["📋 Valores", "👥 Destinatarios", "🧪 Probar", "⚙️ Publicar"])
+    t0, t1, t2, t3, t4 = st.tabs(
+        ["📊 Resumen", "📋 Valores", "👥 Destinatarios", "🧪 Probar", "⚙️ Publicar"])
+
+    # ============================================================ RESUMEN
+    with t0:
+        _panel_resumen(cfg)
+
 
     # ============================================================ VALORES
     with t1:
@@ -154,33 +214,77 @@ def render_alertas():
             añadidos = []
             for t in [x.strip().upper() for x in nuevos.split(",") if x.strip()]:
                 if t not in existentes:
-                    cfg["valores"].append({"ticker": t, "compra": av_compra, "venta": av_venta})
+                    cfg["valores"].append({"ticker": t, "compra": av_compra,
+                                           "venta": av_venta, "activo": True,
+                                           "destinatarios": []})
                     añadidos.append(t)
             if añadidos:
-                st.success(f"Añadidos: {', '.join(añadidos)}")
+                st.success(f"Añadidos: {', '.join(añadidos)}. "
+                           "Pulsa «Guardar en GitHub» en Publicar para que surtan efecto.")
                 st.rerun()
             elif nuevos.strip():
                 st.info("Ya estaban en la lista.")
 
         if cfg["valores"]:
+            base = pd.DataFrame([A.normalizar_valor(v) for v in cfg["valores"]])
             ed = st.data_editor(
-                pd.DataFrame(cfg["valores"]),
-                width='stretch', hide_index=True, num_rows="dynamic",
+                base[["ticker", "activo", "compra", "venta"]],
+                width='stretch', hide_index=True, num_rows="fixed",
                 column_config={
-                    "ticker": st.column_config.TextColumn("Ticker", required=True),
+                    "ticker": st.column_config.TextColumn("Ticker", disabled=True),
+                    "activo": st.column_config.CheckboxColumn(
+                        "Activa", help="Desmárcala para dejar de recibir avisos "
+                                       "sin borrar el valor."),
                     "compra": st.column_config.CheckboxColumn("Avisar compra"),
                     "venta": st.column_config.CheckboxColumn("Avisar venta"),
                 },
                 key="editor_valores",
             )
+            previos = {A.normalizar_valor(v)["ticker"]: A.normalizar_valor(v)
+                       for v in cfg["valores"]}
             cfg["valores"] = [
                 {"ticker": str(r["ticker"]).strip().upper(),
-                 "compra": bool(r.get("compra", True)),
-                 "venta": bool(r.get("venta", True))}
+                 "compra": bool(r["compra"]),
+                 "venta": bool(r["venta"]),
+                 "activo": bool(r["activo"]),
+                 "destinatarios": previos.get(str(r["ticker"]).strip().upper(), {})
+                                          .get("destinatarios", [])}
                 for _, r in ed.iterrows() if str(r.get("ticker", "")).strip()
             ]
-            st.caption(f"{len(cfg['valores'])} valor(es). Puedes editar o borrar filas "
-                       "directamente en la tabla.")
+            n_act = sum(1 for v in cfg["valores"] if v["activo"])
+            st.caption(f"{len(cfg['valores'])} valor(es), {n_act} activo(s). "
+                       "Desmarcar «Activa» pausa los avisos sin perder el valor.")
+
+            # ---------------- borrado ----------------
+            st.markdown("**Eliminar valores**")
+            c1, c2 = st.columns([3, 1])
+            a_borrar = c1.multiselect(
+                "Selecciona los que quieras quitar de la lista",
+                [v["ticker"] for v in cfg["valores"]],
+                key="borrar_valores", label_visibility="collapsed",
+                placeholder="Elige uno o varios tickers…")
+            if c2.button("🗑️ Eliminar", width='stretch', disabled=not a_borrar):
+                cfg["valores"] = [v for v in cfg["valores"]
+                                  if v["ticker"] not in a_borrar]
+                st.success(f"Eliminados: {', '.join(a_borrar)}. "
+                           "Recuerda pulsar «Guardar en GitHub» en Publicar.")
+                st.rerun()
+
+            # ------------- destinatarios por valor -------------
+            if len(cfg.get("destinatarios", [])) > 1:
+                with st.expander("¿Quién recibe cada valor? (por defecto, todos)"):
+                    st.caption("Útil si cada persona sigue valores distintos. "
+                               "Déjalo vacío para avisar a todo el mundo.")
+                    opciones = {d.get("alias", d["chat_id"]): str(d["chat_id"])
+                                for d in cfg["destinatarios"]}
+                    for i, v in enumerate(cfg["valores"]):
+                        actuales = [a for a, cid in opciones.items()
+                                    if cid in [str(x) for x in v.get("destinatarios", [])]]
+                        elegidos = st.multiselect(
+                            v["ticker"], list(opciones.keys()), default=actuales,
+                            key=f"dest_val_{i}_{v['ticker']}",
+                            placeholder="Todos")
+                        cfg["valores"][i]["destinatarios"] = [opciones[a] for a in elegidos]
         else:
             st.info("Todavía no hay valores. Añade alguno arriba.")
 

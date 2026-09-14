@@ -30,8 +30,12 @@ def main():
 
     cfg = A.cargar_config(args.config)
 
+    activos = [v for v in cfg.get("valores", []) if v.get("activo", True)]
     if not cfg.get("valores"):
         print("No hay valores configurados. Nada que revisar.")
+        return 0
+    if not activos:
+        print("Todos los valores están en pausa. Nada que revisar.")
         return 0
     if not cfg.get("destinatarios") and not args.simular:
         print("No hay destinatarios configurados.", file=sys.stderr)
@@ -44,13 +48,16 @@ def main():
             return 1
         print(f"Bot conectado: {det}")
 
-    print(f"Revisando {len(cfg['valores'])} valores…")
+    print(f"Revisando {len(activos)} valor(es) activo(s) de {len(cfg['valores'])}…")
     r = A.revisar(cfg, enviar=not args.simular, path_estado=args.estado)
 
     for e in r["evaluados"]:
         print(f"  {e['ticker']:<12} {e['estado']:<9} "
               f"precio {e['precio']:>10,.2f}  RSI {e['rsi']:>5.1f}  "
               f"%B {e['pct_b']:>6.1f}  ({e['dias_en_estado']} sesiones)")
+
+    if r.get("pausados"):
+        print(f"\nEn pausa (no se revisan): {', '.join(r['pausados'])}")
 
     for err in r["errores"]:
         print(f"  ! {err}", file=sys.stderr)

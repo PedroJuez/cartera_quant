@@ -89,12 +89,38 @@ def obtener_token() -> str | None:
 
 CONFIG_VACIA = {
     "destinatarios": [],   # [{"alias": "Pedro", "chat_id": "123456789"}]
-    "valores": [],         # [{"ticker": "SAN.MC", "compra": True, "venta": True}]
+    # [{"ticker": "SAN.MC", "compra": True, "venta": True, "activo": True,
+    #   "destinatarios": []}]   destinatarios vacío = avisar a todos
+    "valores": [],
     # Los cortos vienen activados para las alertas: sin esto nunca existiría
     # el estado VENTA y solo llegarían avisos de compra.
     "parametros": {"permitir_short": True},
     "periodo": "2y",
 }
+
+
+def normalizar_valor(v: dict) -> dict:
+    """
+    Completa un valor con los campos nuevos. Las configuraciones guardadas
+    antes de existir 'activo' y 'destinatarios' siguen funcionando: se
+    entienden como activas y dirigidas a todo el mundo.
+    """
+    return {
+        "ticker": str(v.get("ticker", "")).strip().upper(),
+        "compra": bool(v.get("compra", True)),
+        "venta": bool(v.get("venta", True)),
+        "activo": bool(v.get("activo", True)),
+        "destinatarios": list(v.get("destinatarios", [])),
+    }
+
+
+def destinatarios_de(valor: dict, cfg: dict) -> list[dict]:
+    """Quién recibe los avisos de este valor. Lista vacía = todos."""
+    todos = cfg.get("destinatarios", [])
+    elegidos = valor.get("destinatarios") or []
+    if not elegidos:
+        return todos
+    return [d for d in todos if str(d.get("chat_id")) in [str(x) for x in elegidos]]
 
 
 def cargar_config(path: Path | str = FICHERO_CONFIG) -> dict:
@@ -103,7 +129,9 @@ def cargar_config(path: Path | str = FICHERO_CONFIG) -> dict:
         return dict(CONFIG_VACIA)
     try:
         cfg = json.loads(p.read_text(encoding="utf-8"))
-        return {**CONFIG_VACIA, **cfg}
+        cfg = {**CONFIG_VACIA, **cfg}
+        cfg["valores"] = [normalizar_valor(v) for v in cfg.get("valores", [])]
+        return cfg
     except Exception:
         return dict(CONFIG_VACIA)
 
@@ -441,9 +469,12 @@ def revisar(config: dict | None = None, enviar: bool = True,
     resumen = {"evaluados": [], "alertas": [], "errores": [],
                "envios": [], "momento": datetime.now().isoformat(timespec="seconds")}
 
-    for v in cfg.get("valores", []):
-        tk = v.get("ticker", "").strip().upper()
+    for v in [normalizar_valor(x) for x in cfg.get("valores", [])]:
+        tk = v["ticker"]
         if not tk:
+            continue
+        if not v["activo"]:
+            resumen["pausados"] = resumen.get("pausados", []) + [tk]
             continue
         actual = evaluar_valor(tk, cfg_senales, periodo)
         if actual is None:
@@ -459,14 +490,14 @@ def revisar(config: dict | None = None, enviar: bool = True,
                 actual = {**actual, "evento": inferido,
                           "motivo": "cambio detectado desde la última revisión"}
 
-        quiere = ((actual["evento"] == "COMPRA" and v.get("compra", True))
-                  or (actual["evento"] == "VENTA" and v.get("venta", True)))
+        quiere = ((actual["evento"] == "COMPRA" and v["compra"])
+                  or (actual["evento"] == "VENTA" and v["venta"]))
 
         if quiere and hay_cambio(estado.get(tk), actual):
             resumen["alertas"].append(actual)
             if enviar:
                 texto = construir_mensaje(actual)
-                for d in cfg.get("destinatarios", []):
+                for d in destinatarios_de(v, cfg):
                     ok, det = envio(d["chat_id"], texto, token)
                     resumen["envios"].append(
                         {"alias": d.get("alias", d["chat_id"]), "ticker": tk,
